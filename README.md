@@ -7,9 +7,8 @@
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
 </p>
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/screenshot-placeholder.png" alt="RDP Monitor Screenshot" width="800">
-</p>
+![Главное окно](screenshots/main_window.png)
+
 
 ## 🔐 Описание
 
@@ -49,16 +48,6 @@
 4. Проверьте работу через **"🎯 RDP Тест"** или **"🌐 Диаг. сети"**
 
 ## 🎛️ Интерфейс программы
-
-### 📸 Скриншоты
-
-<details>
-<summary>Нажмите для просмотра скриншотов</summary>
-
-#### Главное окно
-![Главное окно](screenshots/main_window.png)
-
-</details>
 
 ### Основные вкладки
 
