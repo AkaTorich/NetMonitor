@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics; // Добавляем для EventLog
+using System.Diagnostics.Eventing.Reader;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions; // Добавляем для Regex
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -15,9 +18,18 @@ namespace RDPLoginMonitor
         private NetworkMonitor _networkMonitor;
         private BindingList<RDPFailedLogin> _loginAttempts;
         private BindingList<NetworkDevice> _networkDevices;
-        private Timer _statsTimer;
-        private Timer _networkTimer;
-        private Timer _autoScanTimer;
+        private System.Windows.Forms.Timer _statsTimer;         // Указываем точный тип
+        private System.Windows.Forms.Timer _networkTimer;       // Указываем точный тип
+        private System.Windows.Forms.Timer _autoScanTimer;      // Указываем точный тип
+
+        // НОВЫЕ ПОЛЯ ДЛЯ УСТРАНЕНИЯ ФЛУДА
+        private HashSet<string> _processedEventIds = new HashSet<string>();
+        private int _testMessageCount = 0;
+        private const int MAX_TEST_MESSAGES = 50;
+        private DateTime _lastEventLogRead = DateTime.MinValue;
+        private bool _silentMode = false;
+        private EventLogWatcher _eventWatcher;
+        private bool _isRDPTestRunning = false;
 
         public MainForm()
         {
@@ -75,6 +87,20 @@ namespace RDPLoginMonitor
             // Инициализация сетевого монитора
             _networkMonitor = new NetworkMonitor();
 
+            // ВАЖНО: Сначала подключаем логирование, чтобы видеть загрузку базы MAC
+            _networkMonitor.OnLogMessage += (message, level) =>
+            {
+                if (InvokeRequired)
+                {
+                    Invoke(new Action(() => AddLogMessage(message, level)));
+                }
+                else
+                {
+                    AddLogMessage(message, level);
+                }
+            };
+
+            // Теперь подключаем остальные события
             _networkMonitor.OnNewDeviceDetected += (device) =>
             {
                 if (InvokeRequired)
@@ -99,18 +125,30 @@ namespace RDPLoginMonitor
                 }
             };
 
-            // Таймеры
-            _statsTimer = new Timer { Interval = 5000 };
+            // Таймеры - указываем точный тип System.Windows.Forms.Timer
+            _statsTimer = new System.Windows.Forms.Timer { Interval = 5000 };
             _statsTimer.Tick += StatsTimer_Tick;
 
-            _networkTimer = new Timer { Interval = 10000 };
+            _networkTimer = new System.Windows.Forms.Timer { Interval = 10000 };
             _networkTimer.Tick += NetworkTimer_Tick;
 
-            _autoScanTimer = new Timer { Interval = 300000 }; // 5 минут по умолчанию
+            _autoScanTimer = new System.Windows.Forms.Timer { Interval = 300000 }; // 5 минут по умолчанию
             _autoScanTimer.Tick += AutoScanTimer_Tick;
 
             // Подключаем события после создания элементов
             this.Load += MainForm_Load;
+
+            // Инициализация колонок для статистики
+            InitializeStatisticsView();
+        }
+
+        private void InitializeStatisticsView()
+        {
+            statisticsView.Columns.Clear();
+            statisticsView.Columns.Add("Источник", 200);
+            statisticsView.Columns.Add("Попыток", 80);
+            statisticsView.Columns.Add("Последняя", 100);
+            statisticsView.Columns.Add("Статус", 120);
         }
 
         private void MainForm_Load(object sender, EventArgs e)
@@ -121,6 +159,144 @@ namespace RDPLoginMonitor
 
             if (autoScanCheckBox != null)
                 autoScanCheckBox.CheckedChanged += AutoScanCheckBox_CheckedChanged;
+
+            // Добавляем приветственное сообщение
+            AddLogMessage("=== RDP & Network Security Monitor v2.1 ===", LogLevel.Info);
+            AddLogMessage("Готов к работе. Для диагностики нажми 'Диагностика' или 'Диаг. сети'", LogLevel.Info);
+
+            // УЛУЧШЕННАЯ проверка прав администратора при запуске
+            CheckAdminRightsAndOfferRestart();
+        }
+
+        /// <summary>
+        /// Проверяет права администратора и предлагает перезапуск если нужно
+        /// </summary>
+        private void CheckAdminRightsAndOfferRestart()
+        {
+            if (!_monitor.IsRunningAsAdministrator())
+            {
+                AddLogMessage("⚠️ Программа запущена БЕЗ прав администратора", LogLevel.Warning);
+                AddLogMessage("📊 Доступные функции: диагностика сети, сканирование MAC базы", LogLevel.Info);
+                AddLogMessage("🔒 Ограниченные функции: мониторинг RDP событий, полная диагностика", LogLevel.Warning);
+
+                // Показываем диалог с предложением перезапуска
+                var result = MessageBox.Show(
+                    "🔐 ПРАВА АДМИНИСТРАТОРА\n\n" +
+                    "Программа запущена без прав администратора.\n\n" +
+                    "✅ ДОСТУПНО БЕЗ АДМИНА:\n" +
+                    "• Сканирование сети\n" +
+                    "• Диагностика MAC базы данных\n" +
+                    "• Поиск устройств в локальной сети\n" +
+                    "• Анализ ARP таблицы\n\n" +
+                    "🔒 ТРЕБУЮТ ПРАВА АДМИНА:\n" +
+                    "• Мониторинг RDP событий (Security Log)\n" +
+                    "• Полная диагностика журнала событий\n" +
+                    "• Детектирование неудачных попыток входа\n\n" +
+                    "Хочешь перезапустить программу с правами администратора?",
+                    "Права доступа",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
+
+                switch (result)
+                {
+                    case DialogResult.Yes:
+                        RestartAsAdministrator();
+                        return;
+
+                    case DialogResult.No:
+                        AddLogMessage("✅ Продолжаем работу в ограниченном режиме", LogLevel.Info);
+                        AddLogMessage("💡 Совет: диагностика сети полностью доступна без прав админа", LogLevel.Info);
+
+                        // Отключаем кнопки, требующие права админа
+                        DisableAdminRequiredFeatures();
+                        break;
+
+                    case DialogResult.Cancel:
+                        AddLogMessage("❌ Выход из программы по запросу пользователя", LogLevel.Warning);
+                        this.Close();
+                        return;
+                }
+            }
+            else
+            {
+                AddLogMessage("✅ Программа запущена с правами администратора - полный функционал доступен", LogLevel.Success);
+            }
+        }
+
+        /// <summary>
+        /// Перезапускает программу с правами администратора
+        /// </summary>
+        private void RestartAsAdministrator()
+        {
+            try
+            {
+                AddLogMessage("🔄 Перезапускаем программу с правами администратора...", LogLevel.Info);
+
+                var startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = System.Reflection.Assembly.GetExecutingAssembly().Location,
+                    UseShellExecute = true,
+                    Verb = "runas" // Запрос прав администратора
+                };
+
+                System.Diagnostics.Process.Start(startInfo);
+                this.Close();
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка перезапуска: {ex.Message}", LogLevel.Error);
+                MessageBox.Show(
+                    "Не удалось перезапустить программу с правами администратора.\n\n" +
+                    "Попробуй:\n" +
+                    "1. Закрыть программу\n" +
+                    "2. Нажать ПКМ на exe файле\n" +
+                    "3. Выбрать 'Запуск от имени администратора'\n\n" +
+                    "Или продолжи работу в текущем режиме.",
+                    "Ошибка перезапуска",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>
+        /// ПРОСТОЕ отключение кнопок, требующих права администратора
+        /// </summary>
+        private void DisableAdminRequiredFeatures()
+        {
+            // Просто отключаем кнопки и делаем их серыми
+            startButton.Enabled = false;
+            testRDPButton.Enabled = false;
+
+            // Меняем цвет на серый
+            startButton.BackColor = Color.LightGray;
+            testRDPButton.BackColor = Color.LightGray;
+
+            // Обновляем только подсказку внизу
+            testInfoLabel.Text = "💡 Без прав админа доступны: сканирование сети, диагностика MAC базы. Для RDP мониторинга перезапусти как администратор.";
+            testInfoLabel.ForeColor = Color.DarkBlue;
+        }
+
+        /// <summary>
+        /// Обработчик кнопки перезапуска с правами администратора
+        /// </summary>
+        private void RestartAsAdminButton_Click(object sender, EventArgs e)
+        {
+            var result = MessageBox.Show(
+                "Перезапустить программу с правами администратора?\n\n" +
+                "После перезапуска будут доступны:\n" +
+                "• Мониторинг RDP событий\n" +
+                "• Анализ журнала Security\n" +
+                "• RDP тестирование\n" +
+                "• Полная диагностика\n\n" +
+                "Текущие данные будут потеряны.",
+                "Перезапуск с правами администратора",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (result == DialogResult.Yes)
+            {
+                RestartAsAdministrator();
+            }
         }
 
         private void StartButton_Click(object sender, EventArgs e)
@@ -134,6 +310,9 @@ namespace RDPLoginMonitor
 
                 if (networkMonitorCheckBox.Checked)
                 {
+                    // Добавляем сообщение о старте сетевого мониторинга
+                    AddLogMessage("Запускаем сетевой мониторинг...", LogLevel.Info);
+
                     _networkMonitor.StartMonitoring();
                     _networkTimer.Start();
 
@@ -152,24 +331,40 @@ namespace RDPLoginMonitor
 
                 _statsTimer.Start();
 
-                AddLogMessage("Система мониторинга запущена", LogLevel.Info);
+                AddLogMessage("✅ Система мониторинга запущена успешно", LogLevel.Success);
+                AddLogMessage("Мониторинг RDP событий: 4624, 4625, 4634, 4647, 4778, 4779", LogLevel.Info);
             }
             catch (UnauthorizedAccessException)
             {
                 MessageBox.Show("Нет прав доступа к журналу событий.\nЗапусти программу от имени администратора.",
                                "Ошибка доступа", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AddLogMessage("❌ Ошибка: Нет прав доступа к журналу событий", LogLevel.Error);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Ошибка запуска мониторинга: {ex.Message}",
                                "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                AddLogMessage($"❌ Ошибка запуска: {ex.Message}", LogLevel.Error);
             }
         }
-
         private void StopButton_Click(object sender, EventArgs e)
         {
             _monitor.StopMonitoring();
             _networkMonitor.StopMonitoring();
+
+            // Останавливаем RDP тест если он запущен
+            _isRDPTestRunning = false;
+
+            // Освобождаем EventLogWatcher
+            if (_eventWatcher != null)
+            {
+                try
+                {
+                    _eventWatcher.Dispose();
+                    _eventWatcher = null;
+                }
+                catch { }
+            }
 
             startButton.Enabled = true;
             stopButton.Enabled = false;
@@ -178,8 +373,9 @@ namespace RDPLoginMonitor
 
             _statsTimer.Stop();
             _networkTimer.Stop();
+            _autoScanTimer.Stop();
 
-            AddLogMessage("Система мониторинга остановлена", LogLevel.Warning);
+            AddLogMessage("🛑 Система мониторинга остановлена", LogLevel.Warning);
         }
 
         private void ClearButton_Click(object sender, EventArgs e)
@@ -188,7 +384,12 @@ namespace RDPLoginMonitor
             _networkDevices.Clear();
             logTextBox.Clear();
             statisticsView.Items.Clear();
-            AddLogMessage("Данные очищены", LogLevel.Info);
+
+            // Очищаем также наши новые коллекции
+            _processedEventIds.Clear();
+            _testMessageCount = 0;
+
+            AddLogMessage("🗑️ Данные очищены", LogLevel.Info);
         }
 
         private void SaveButton_Click(object sender, EventArgs e)
@@ -223,13 +424,779 @@ namespace RDPLoginMonitor
 
                         File.WriteAllLines(dialog.FileName, lines);
                         MessageBox.Show("Лог сохранен успешно!", "Сохранение", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        AddLogMessage($"Данные экспортированы в {dialog.FileName}", LogLevel.Info);
+                        AddLogMessage($"💾 Данные экспортированы в {dialog.FileName}", LogLevel.Success);
                     }
                     catch (Exception ex)
                     {
                         MessageBox.Show($"Ошибка сохранения: {ex.Message}", "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        AddLogMessage($"❌ Ошибка сохранения: {ex.Message}", LogLevel.Error);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// ИСПРАВЛЕННАЯ диагностика - безопасная многопоточность
+        /// </summary>
+        private void DiagnosticButton_Click(object sender, EventArgs e)
+        {
+            AddLogMessage("🔍 Запуск системной диагностики...", LogLevel.Info);
+
+            // Переключаемся на текстовый лог для показа диагностики
+            tabControl.SelectedIndex = 1;
+
+            // Запускаем диагностику в отдельном потоке
+            Task.Run(() =>
+            {
+                try
+                {
+                    // ВСЕГДА доступная диагностика (не требует админа)
+                    PerformBasicDiagnosticSafe();
+
+                    // Диагностика, требующая прав админа
+                    if (_monitor.IsRunningAsAdministrator())
+                    {
+                        Invoke(new Action(() => AddLogMessage("🔐 Запуск расширенной диагностики (с правами админа)...", LogLevel.Info)));
+
+                        // Вызываем диагностику RDP из главного потока
+                        Invoke(new Action(() =>
+                        {
+                            try
+                            {
+                                _monitor.TestEventLogAccess();
+                            }
+                            catch (Exception ex)
+                            {
+                                AddLogMessage($"❌ Ошибка RDP диагностики: {ex.Message}", LogLevel.Error);
+                            }
+                        }));
+                    }
+                    else
+                    {
+                        Invoke(new Action(() => AddLogMessage("⚠️ Расширенная диагностика пропущена (нет прав админа)", LogLevel.Warning)));
+                        Invoke(new Action(() => AddLogMessage("💡 Для проверки RDP событий запусти программу от имени администратора", LogLevel.Info)));
+                    }
+
+                    Invoke(new Action(() =>
+                    {
+                        AddLogMessage("✅ Диагностика завершена. Проверь результаты выше.", LogLevel.Success);
+                        ShowDiagnosticSummary();
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new Action(() =>
+                    {
+                        AddLogMessage($"❌ Ошибка диагностики: {ex.Message}", LogLevel.Error);
+                    }));
+                }
+            });
+        }
+
+        /// <summary>
+        /// БЕЗОПАСНАЯ базовая диагностика с правильным Invoke
+        /// </summary>
+        private void PerformBasicDiagnosticSafe()
+        {
+            Invoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА СИСТЕМЫ ===", LogLevel.Info)));
+
+            // 1. Проверка прав
+            var hasAdmin = _monitor.IsRunningAsAdministrator();
+            Invoke(new Action(() => AddLogMessage($"🔐 Права администратора: {(hasAdmin ? "ДА" : "НЕТ")}",
+                              hasAdmin ? LogLevel.Success : LogLevel.Warning)));
+
+            // 2. Проверка сетевого подключения
+            Invoke(new Action(() => AddLogMessage("🌐 Проверка сетевого подключения...", LogLevel.Info)));
+            try
+            {
+                var localIP = GetLocalIPForDiagnostic();
+                if (!string.IsNullOrEmpty(localIP))
+                {
+                    Invoke(new Action(() => AddLogMessage($"✅ Локальный IP найден: {localIP}", LogLevel.Success)));
+
+                    var networkPrefix = GetNetworkPrefix(localIP);
+                    Invoke(new Action(() => AddLogMessage($"📡 Сетевая подсеть: {networkPrefix}.0/24", LogLevel.Info)));
+                }
+                else
+                {
+                    Invoke(new Action(() => AddLogMessage("❌ Не удалось определить локальный IP", LogLevel.Error)));
+                }
+            }
+            catch (Exception ex)
+            {
+                Invoke(new Action(() => AddLogMessage($"❌ Ошибка проверки сети: {ex.Message}", LogLevel.Error)));
+            }
+
+            // 3. Проверка ARP таблицы (доступна без админа)
+            Invoke(new Action(() => AddLogMessage("🔍 Проверка ARP таблицы...", LogLevel.Info)));
+            try
+            {
+                var arpDevices = GetARPDevicesCount();
+                Invoke(new Action(() => AddLogMessage($"📋 Устройств в ARP таблице: {arpDevices}", LogLevel.Success)));
+            }
+            catch (Exception ex)
+            {
+                Invoke(new Action(() => AddLogMessage($"⚠️ Ошибка чтения ARP: {ex.Message}", LogLevel.Warning)));
+            }
+
+            // 4. Проверка MAC базы данных (не требует админа) - НЕ через Invoke!
+            Invoke(new Action(() => AddLogMessage("📚 Проверка базы данных MAC адресов...", LogLevel.Info)));
+
+            // Диагностика MAC базы вызывается напрямую, так как у неё свой Debug вывод
+            _networkMonitor.DiagnoseMacDatabase();
+
+            Invoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА ЗАВЕРШЕНА ===", LogLevel.Info)));
+        }
+
+        /// <summary>
+        /// Показывает итоговую сводку диагностики
+        /// </summary>
+        private void ShowDiagnosticSummary()
+        {
+            var hasAdminRights = _monitor.IsRunningAsAdministrator();
+
+            var summary = "🔍 ИТОГИ ДИАГНОСТИКИ\n\n";
+
+            if (hasAdminRights)
+            {
+                summary += "✅ ПОЛНАЯ ДИАГНОСТИКА ВЫПОЛНЕНА\n\n" +
+                          "Доступные функции:\n" +
+                          "• Мониторинг RDP событий\n" +
+                          "• Сканирование сети\n" +
+                          "• Диагностика MAC базы\n" +
+                          "• Анализ журнала Security\n\n" +
+                          "Рекомендации:\n" +
+                          "1. Используй кнопку 'RDP Тест' для проверки\n" +
+                          "2. Проверь результаты в текстовом логе\n" +
+                          "3. Настрой RDP если нужно";
+            }
+            else
+            {
+                summary += "⚠️ ОГРАНИЧЕННАЯ ДИАГНОСТИКА\n\n" +
+                          "Доступные функции БЕЗ АДМИНА:\n" +
+                          "• Сканирование сети ✅\n" +
+                          "• Диагностика MAC базы ✅\n" +
+                          "• Поиск устройств ✅\n\n" +
+                          "Недоступные функции:\n" +
+                          "• Мониторинг RDP событий ❌\n" +
+                          "• Анализ журнала Security ❌\n\n" +
+                          "Рекомендации:\n" +
+                          "1. Для RDP мониторинга перезапусти как админ\n" +
+                          "2. Сканирование сети работает полностью\n" +
+                          "3. Используй 'Диаг. сети' для проверки MAC базы";
+            }
+
+            MessageBox.Show(summary, "Результаты диагностики",
+                           MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        /// <summary>
+        /// ИСПРАВЛЕННАЯ диагностика сети - полностью работает БЕЗ прав администратора
+        /// </summary>
+        private void DiagNetworkButton_Click(object sender, EventArgs e)
+        {
+            AddLogMessage("🌐 Запуск диагностики сетевого мониторинга...", LogLevel.Network);
+            AddLogMessage("ℹ️ Эта функция НЕ требует права администратора", LogLevel.Info);
+
+            tabControl.SelectedIndex = 1; // Переключаемся на текстовый лог
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    // Диагностика MAC базы данных
+                    Invoke(new Action(() => AddLogMessage("📚 Диагностика базы данных MAC адресов...", LogLevel.Info)));
+                    _networkMonitor.DiagnoseMacDatabase();
+
+                    // Проверка сетевых возможностей
+                    Invoke(new Action(() => AddLogMessage("🔍 Проверка сетевых функций...", LogLevel.Info)));
+
+                    // Тест ARP
+                    var arpCount = GetARPDevicesCount();
+                    Invoke(new Action(() => AddLogMessage($"📋 ARP таблица: найдено {arpCount} устройств", LogLevel.Success)));
+
+                    // Тест пинга
+                    Invoke(new Action(() => AddLogMessage("🏓 Тест сетевого доступа...", LogLevel.Info)));
+                    TestNetworkConnectivitySafe();
+
+                    // Проверка возможности сканирования
+                    Invoke(new Action(() => AddLogMessage("🔍 Тест сканирования сети...", LogLevel.Info)));
+                    TestNetworkScanningSafe();
+
+                    Invoke(new Action(() =>
+                    {
+                        AddLogMessage("✅ Диагностика сети завершена", LogLevel.Success);
+
+                        var message = "🌐 ДИАГНОСТИКА СЕТИ ЗАВЕРШЕНА\n\n" +
+                                     "✅ ДОСТУПНЫЕ ФУНКЦИИ (БЕЗ АДМИНА):\n" +
+                                     "• Сканирование локальной сети\n" +
+                                     "• Определение устройств по MAC\n" +
+                                     "• Анализ ARP таблицы\n" +
+                                     "• Ping тестирование\n" +
+                                     "• Определение производителей устройств\n\n" +
+                                     $"📊 СТАТИСТИКА:\n" +
+                                     $"• MAC база: записей загружено\n" +
+                                     $"• ARP устройств: {arpCount}\n" +
+                                     $"• Сетевое подключение: проверено\n\n" +
+                                     "Проверить детали в логах?";
+
+                        var result = MessageBox.Show(message, "Диагностика сети",
+                                                   MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+                        if (result == DialogResult.Yes)
+                        {
+                            // Уже на вкладке текстового лога
+                            AddLogMessage("📝 Проверь результаты диагностики выше", LogLevel.Info);
+                        }
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new Action(() =>
+                    {
+                        AddLogMessage($"❌ Ошибка диагностики сети: {ex.Message}", LogLevel.Error);
+                    }));
+                }
+            });
+        }
+
+        private void TestRDPButton_Click(object sender, EventArgs e)
+        {
+            if (_isRDPTestRunning)
+            {
+                // Останавливаем тест если он уже запущен
+                _isRDPTestRunning = false;
+                testRDPButton.Text = "🎯 RDP Тест";
+                testRDPButton.BackColor = Color.LightGreen;
+                AddLogMessage("⏹️ RDP тест остановлен пользователем", LogLevel.Warning);
+                return;
+            }
+
+            AddLogMessage("🔍 Запуск RDP теста...", LogLevel.Info);
+
+            // Переключаемся на текстовый лог для показа результатов
+            tabControl.SelectedIndex = 1;
+
+            // Спрашиваем про тихий режим
+            var modeResult = MessageBox.Show(
+                "Выберите режим мониторинга:\n\n" +
+                "ДА = Тихий режим (только важные события)\n" +
+                "НЕТ = Подробный режим (все события)\n" +
+                "ОТМЕНА = Отменить тест",
+                "Режим RDP теста",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question);
+
+            if (modeResult == DialogResult.Cancel) return;
+
+            _silentMode = (modeResult == DialogResult.Yes);
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    // Показываем инструкции
+                    Invoke(new Action(() =>
+                    {
+                        var instructions = "ТЕСТИРОВАНИЕ RDP - ИНСТРУКЦИИ:\n\n" +
+                                         "1. Убедись что RDP включен на этом компьютере\n" +
+                                         "2. Открой 'Подключение к удаленному рабочему столу' (mstsc)\n" +
+                                         "3. Подключись к: 127.0.0.1 или localhost\n" +
+                                         "4. Попробуй:\n" +
+                                         "   - Правильный пароль (должно создать LogonType 10)\n" +
+                                         "   - Неправильный пароль (должно создать событие 4625)\n" +
+                                         "5. Смотри результаты в текстовом логе\n\n" +
+                                         $"Режим: {(_silentMode ? "Тихий" : "Подробный")}\n\n" +
+                                         "Начать тест?";
+
+                        var result = MessageBox.Show(instructions, "RDP Тест",
+                                                   MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                        if (result == DialogResult.Yes)
+                        {
+                            AddLogMessage("🎯 RDP тест запущен. Попробуй подключиться через RDP...", LogLevel.Success);
+                            AddLogMessage($"📋 Режим мониторинга: {(_silentMode ? "Тихий (только важные события)" : "Подробный (все события)")}", LogLevel.Info);
+
+                            // Включаем специальный режим мониторинга RDP
+                            StartRDPTestMonitoring();
+                        }
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Invoke(new Action(() =>
+                    {
+                        AddLogMessage($"❌ Ошибка RDP теста: {ex.Message}", LogLevel.Error);
+                    }));
+                }
+            });
+        }
+
+        private void StartRDPTestMonitoring()
+        {
+            _isRDPTestRunning = true;
+            _processedEventIds.Clear();
+            _testMessageCount = 0;
+
+            // Обновляем UI кнопки
+            Invoke(new Action(() =>
+            {
+                testRDPButton.Text = "⏹️ Остановить";
+                testRDPButton.BackColor = Color.LightCoral;
+            }));
+
+            // Специальный режим мониторинга для тестирования RDP
+            Task.Run(() =>
+            {
+                var startTime = DateTime.Now;
+                var foundRDP = false;
+                var lastProcessedIndex = -1;
+
+                AddLogMessageSafe("🔄 Начинаю мониторинг RDP событий в реальном времени...", LogLevel.Info);
+
+                while (_isRDPTestRunning && (DateTime.Now - startTime).TotalMinutes < 10 && !foundRDP)
+                {
+                    try
+                    {
+                        // Ограничиваем количество сообщений
+                        if (_testMessageCount >= MAX_TEST_MESSAGES && !_silentMode)
+                        {
+                            AddLogMessageSafe("⚠️ Достигнут лимит сообщений. Переключаюсь в тихий режим...", LogLevel.Warning);
+                            _silentMode = true;
+                        }
+
+                        using (var eventLog = new EventLog("Security"))
+                        {
+                            if (eventLog.Entries == null || eventLog.Entries.Count == 0)
+                            {
+                                if (!_silentMode)
+                                    AddLogMessageSafe("⚠️ Журнал событий пуст или недоступен", LogLevel.Warning);
+                                continue;
+                            }
+
+                            // Проверяем только новые события после последнего обработанного
+                            var totalEntries = eventLog.Entries.Count;
+                            if (lastProcessedIndex >= totalEntries - 1)
+                            {
+                                System.Threading.Thread.Sleep(2000);
+                                continue;
+                            }
+
+                            // Обрабатываем только последние несколько событий
+                            var startIndex = Math.Max(lastProcessedIndex + 1, totalEntries - 5);
+                            var eventsProcessed = 0;
+
+                            for (int i = startIndex; i < totalEntries && _isRDPTestRunning; i++)
+                            {
+                                var entry = eventLog.Entries[i];
+                                lastProcessedIndex = i;
+
+                                // Только события после начала теста
+                                if (entry.TimeGenerated <= startTime) continue;
+
+                                // Создаем уникальный ID для события
+                                var eventId = $"{entry.TimeGenerated:yyyy-MM-dd HH:mm:ss.fff}_{entry.InstanceId}_{entry.Index}";
+
+                                // Пропускаем уже обработанные события
+                                if (_processedEventIds.Contains(eventId)) continue;
+                                _processedEventIds.Add(eventId);
+
+                                if (entry.InstanceId == 4624 || entry.InstanceId == 4625 || entry.InstanceId == 4634)
+                                {
+                                    var login = ParseEventLogEntry(entry);
+                                    if (login != null && IsRelevantTestEvent(login, entry.InstanceId))
+                                    {
+                                        eventsProcessed++;
+                                        var message = FormatTestMessage(entry.InstanceId, login);
+
+                                        if (login.LogonType == "10") // RDP найден!
+                                        {
+                                            foundRDP = true;
+                                            message = $"🎉 УСПЕХ! Найдено RDP событие: {login.Username} с {login.SourceIP}";
+                                            AddLogMessageSafe(message, LogLevel.Success);
+                                            break;
+                                        }
+                                        else if (ShouldDisplayMessage(login))
+                                        {
+                                            AddLogMessageSafe(message, GetLogLevel(entry.InstanceId, login));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Показываем статистику периодически
+                            if (!_silentMode && eventsProcessed > 0)
+                            {
+                                var elapsed = DateTime.Now - startTime;
+                                AddLogMessageSafe($"📊 Обработано {eventsProcessed} новых событий за {elapsed:mm\\:ss}", LogLevel.Debug);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AddLogMessageSafe($"⚠️ Ошибка мониторинга: {ex.Message}", LogLevel.Error);
+
+                        // При ошибке увеличиваем задержку
+                        System.Threading.Thread.Sleep(5000);
+                        continue;
+                    }
+
+                    // Пауза между проверками
+                    System.Threading.Thread.Sleep(_silentMode ? 3000 : 2000);
+                }
+
+                // Завершение теста
+                Invoke(new Action(() =>
+                {
+                    _isRDPTestRunning = false;
+                    testRDPButton.Text = "🎯 RDP Тест";
+                    testRDPButton.BackColor = Color.LightGreen;
+
+                    if (foundRDP)
+                    {
+                        AddLogMessage("✅ RDP ТЕСТ ПРОЙДЕН! Программа корректно обнаруживает RDP события.", LogLevel.Success);
+                    }
+                    else
+                    {
+                        var elapsed = DateTime.Now - startTime;
+                        AddLogMessage($"⚠️ RDP события не найдены за {elapsed:mm\\:ss}. Проверь настройки RDP и аудита.", LogLevel.Warning);
+                        AddLogMessage("💡 Рекомендации:", LogLevel.Info);
+                        AddLogMessage("   1. Панель управления → Система → Удаленный доступ → Включить", LogLevel.Info);
+                        AddLogMessage("   2. Проверь что аудит входов включен в локальной политике безопасности", LogLevel.Info);
+                        AddLogMessage("   3. Попробуй подключиться с другого устройства в сети", LogLevel.Info);
+                    }
+
+                    AddLogMessage($"📈 Статистика теста: обработано {_testMessageCount} сообщений, найдено {_processedEventIds.Count} уникальных событий", LogLevel.Info);
+                }));
+            });
+        }
+
+        // НОВЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ УСТРАНЕНИЯ ФЛУДА
+
+        private bool IsRelevantTestEvent(RDPFailedLogin login, long eventId)
+        {
+            // Всегда показываем события 4625 (неудачные попытки)
+            if (eventId == 4625) return true;
+
+            // Игнорируем системные события в тихом режиме
+            if (_silentMode && login.LogonType == "5") return false;
+
+            // Игнорируем компьютерные аккаунты (заканчиваются на $) в тихом режиме
+            if (_silentMode && login.Username.EndsWith("$")) return false;
+
+            // Показываем только важные типы входа
+            var relevantLogonTypes = new[] { "2", "3", "7", "10", "11" };
+            return relevantLogonTypes.Contains(login.LogonType);
+        }
+
+        private bool ShouldDisplayMessage(RDPFailedLogin login)
+        {
+            // В тихом режиме показываем меньше сообщений
+            if (_silentMode)
+            {
+                // Показываем только неудачные попытки, RDP (10), разблокировку (7) и сетевые входы (3)
+                var importantTypes = new[] { "3", "7", "10" };
+                return importantTypes.Contains(login.LogonType) || login.Username != "СИСТЕМА";
+            }
+
+            return true;
+        }
+
+        private string FormatTestMessage(long eventId, RDPFailedLogin login)
+        {
+            var eventType = eventId == 4624 ? "Вход" : eventId == 4625 ? "НЕУДАЧА" : "Выход";
+            var logonDesc = GetLogonTypeDescription(login.LogonType);
+
+            return $"🔍 {eventType}: {login.Username} с {login.SourceIP} ({logonDesc})";
+        }
+
+        private string GetLogonTypeDescription(string logonType)
+        {
+            switch (logonType)
+            {
+                case "2": return "Интерактивный";
+                case "3": return "Сетевой";
+                case "4": return "Пакетный";
+                case "5": return "Служба";
+                case "7": return "Разблокировка";
+                case "8": return "NetworkCleartext";
+                case "9": return "NewCredentials";
+                case "10": return "🎯 RDP";
+                case "11": return "CachedInteractive";
+                default: return $"Тип {logonType}";
+            }
+        }
+
+        private LogLevel GetLogLevel(long eventId, RDPFailedLogin login)
+        {
+            if (eventId == 4625) return LogLevel.Security; // Неудачные попытки - красным
+            if (login.LogonType == "10") return LogLevel.Success; // RDP - зеленым
+            if (login.LogonType == "7") return LogLevel.Warning; // Разблокировка - оранжевым
+            return LogLevel.Debug; // Остальное - серым
+        }
+
+        private void AddLogMessageSafe(string message, LogLevel level)
+        {
+            if (_testMessageCount < MAX_TEST_MESSAGES || level == LogLevel.Success || level == LogLevel.Error)
+            {
+                _testMessageCount++;
+                if (InvokeRequired)
+                {
+                    Invoke(new Action(() => AddLogMessage(message, level)));
+                }
+                else
+                {
+                    AddLogMessage(message, level);
+                }
+            }
+        }
+
+        private RDPFailedLogin ParseEventLogEntry(EventLogEntry entry)
+        {
+            try
+            {
+                var login = new RDPFailedLogin
+                {
+                    TimeStamp = entry.TimeGenerated,
+                    EventId = (int)entry.InstanceId,
+                    Computer = entry.MachineName,
+                    Description = entry.Message ?? "Нет описания"
+                };
+
+                var message = entry.Message ?? "";
+
+                // Извлекаем имя пользователя
+                var userMatch = Regex.Match(message, @"Account Name:\s*([^\r\n\t]+)");
+                if (!userMatch.Success)
+                {
+                    userMatch = Regex.Match(message, @"Имя учетной записи:\s*([^\r\n\t]+)");
+                }
+                login.Username = userMatch.Success ? userMatch.Groups[1].Value.Trim() : "Unknown";
+
+                // Извлекаем IP адрес
+                var ipMatch = Regex.Match(message, @"Source Network Address:\s*([^\r\n\t]+)");
+                if (!ipMatch.Success)
+                {
+                    ipMatch = Regex.Match(message, @"Адрес источника в сети:\s*([^\r\n\t]+)");
+                }
+                login.SourceIP = ipMatch.Success ? ipMatch.Groups[1].Value.Trim() : "Unknown";
+
+                // Извлекаем тип входа
+                var logonTypeMatch = Regex.Match(message, @"Logon Type:\s*([^\r\n\t]+)");
+                if (!logonTypeMatch.Success)
+                {
+                    logonTypeMatch = Regex.Match(message, @"Тип входа:\s*([^\r\n\t]+)");
+                }
+                login.LogonType = logonTypeMatch.Success ? logonTypeMatch.Groups[1].Value.Trim() : "Unknown";
+
+                return login;
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"Ошибка парсинга EventLogEntry: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Безопасная версия тестирования сетевого подключения (с правильным Invoke)
+        /// </summary>
+        private void TestNetworkConnectivitySafe()
+        {
+            try
+            {
+                // Тест пинга локального шлюза
+                using (var ping = new System.Net.NetworkInformation.Ping())
+                {
+                    var localIP = GetLocalIPForDiagnostic();
+                    if (!string.IsNullOrEmpty(localIP))
+                    {
+                        var gateway = GetNetworkPrefix(localIP) + ".1";
+                        var reply = ping.Send(gateway, 3000);
+
+                        if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
+                        {
+                            Invoke(new Action(() => AddLogMessage($"✅ Ping шлюза {gateway}: успешно ({reply.RoundtripTime}ms)", LogLevel.Success)));
+                        }
+                        else
+                        {
+                            Invoke(new Action(() => AddLogMessage($"⚠️ Ping шлюза {gateway}: {reply.Status}", LogLevel.Warning)));
+                        }
+                    }
+                }
+
+                // Тест DNS
+                try
+                {
+                    var hostEntry = System.Net.Dns.GetHostEntry("google.com");
+                    Invoke(new Action(() => AddLogMessage("✅ DNS резолюция: работает", LogLevel.Success)));
+                }
+                catch
+                {
+                    Invoke(new Action(() => AddLogMessage("⚠️ DNS резолюция: проблемы", LogLevel.Warning)));
+                }
+            }
+            catch (Exception ex)
+            {
+                Invoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сети: {ex.Message}", LogLevel.Error)));
+            }
+        }
+
+        /// <summary>
+        /// Безопасная версия тестирования сканирования сети (с правильным Invoke)
+        /// </summary>
+        private void TestNetworkScanningSafe()
+        {
+            try
+            {
+                var localIP = GetLocalIPForDiagnostic();
+                if (!string.IsNullOrEmpty(localIP))
+                {
+                    Invoke(new Action(() => AddLogMessage($"🔍 Тестовое сканирование с IP: {localIP}", LogLevel.Info)));
+
+                    // Быстрый тест сканирования 3 адресов
+                    var networkPrefix = GetNetworkPrefix(localIP);
+                    var testIPs = new[] { $"{networkPrefix}.1", $"{networkPrefix}.100", $"{networkPrefix}.254" };
+                    var foundDevices = 0;
+
+                    foreach (var testIP in testIPs)
+                    {
+                        try
+                        {
+                            using (var ping = new System.Net.NetworkInformation.Ping())
+                            {
+                                var reply = ping.Send(testIP, 1000);
+                                if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
+                                {
+                                    foundDevices++;
+                                    Invoke(new Action(() => AddLogMessage($"📱 Найдено устройство: {testIP} ({reply.RoundtripTime}ms)", LogLevel.Success)));
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    Invoke(new Action(() => AddLogMessage($"📊 Результат теста: найдено {foundDevices} из {testIPs.Length} тестовых адресов", LogLevel.Info)));
+
+                    if (foundDevices > 0)
+                    {
+                        Invoke(new Action(() => AddLogMessage("✅ Сканирование сети: работает корректно", LogLevel.Success)));
+                    }
+                    else
+                    {
+                        Invoke(new Action(() => AddLogMessage("⚠️ Сканирование сети: возможны проблемы с файрволом", LogLevel.Warning)));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Invoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сканирования: {ex.Message}", LogLevel.Error)));
+            }
+        }
+
+        /// <summary>
+        /// Получает локальный IP для диагностики
+        /// </summary>
+        private string GetLocalIPForDiagnostic()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                        ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+                    {
+                        foreach (var addr in ni.GetIPProperties().UnicastAddresses)
+                        {
+                            if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                            {
+                                var ip = addr.Address.ToString();
+                                if (ip.StartsWith("192.168.") || ip.StartsWith("10.") ||
+                                    (ip.StartsWith("172.") && IsInRange172(ip)))
+                                {
+                                    return ip;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // НЕ вызываем AddLogMessage отсюда, так как может быть вызвано из фонового потока
+                System.Diagnostics.Debug.WriteLine($"Ошибка получения IP: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Проверяет диапазон 172.16-31.x.x
+        /// </summary>
+        private bool IsInRange172(string ip)
+        {
+            try
+            {
+                var parts = ip.Split('.');
+                if (parts.Length >= 2)
+                {
+                    var secondOctet = int.Parse(parts[1]);
+                    return secondOctet >= 16 && secondOctet <= 31;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Получает префикс сети
+        /// </summary>
+        private string GetNetworkPrefix(string ipAddress)
+        {
+            var parts = ipAddress.Split('.');
+            return $"{parts[0]}.{parts[1]}.{parts[2]}";
+        }
+
+        /// <summary>
+        /// Подсчитывает устройства в ARP таблице
+        /// </summary>
+        private int GetARPDevicesCount()
+        {
+            try
+            {
+                var process = new System.Diagnostics.Process
+                {
+                    StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "arp",
+                        Arguments = "-a",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                // Подсчитываем строки с MAC адресами
+                var lines = output.Split('\n');
+                var deviceCount = 0;
+
+                foreach (var line in lines)
+                {
+                    if (System.Text.RegularExpressions.Regex.IsMatch(line.Trim(),
+                        @"\d+\.\d+\.\d+\.\d+\s+[0-9a-fA-F-]{17}\s+\w+"))
+                    {
+                        deviceCount++;
+                    }
+                }
+
+                return deviceCount;
+            }
+            catch
+            {
+                return 0;
             }
         }
 
@@ -247,30 +1214,48 @@ namespace RDPLoginMonitor
             if (logGrid.Rows.Count > 0)
             {
                 var row = logGrid.Rows[0];
-                switch (login.EventType)
+
+                if (login.EventType == "Неудачный вход")
                 {
-                    case "Неудачный вход":
-                        row.DefaultCellStyle.BackColor = Color.LightPink;
-                        row.DefaultCellStyle.ForeColor = Color.DarkRed;
-                        break;
-                    case "Успешный вход":
-                        row.DefaultCellStyle.BackColor = Color.LightGreen;
-                        row.DefaultCellStyle.ForeColor = Color.DarkGreen;
-                        break;
-                    case "Подозрительная активность":
-                        row.DefaultCellStyle.BackColor = Color.Orange;
-                        row.DefaultCellStyle.ForeColor = Color.DarkOrange;
-                        break;
-                    case "Блокировка аккаунта":
-                        row.DefaultCellStyle.BackColor = Color.Red;
-                        row.DefaultCellStyle.ForeColor = Color.White;
-                        break;
-                    default:
-                        row.DefaultCellStyle.BackColor = Color.White;
-                        row.DefaultCellStyle.ForeColor = Color.Black;
-                        break;
+                    row.DefaultCellStyle.BackColor = Color.LightPink;
+                    row.DefaultCellStyle.ForeColor = Color.DarkRed;
+                }
+                else if (login.EventType == "Успешный вход")
+                {
+                    row.DefaultCellStyle.BackColor = Color.LightGreen;
+                    row.DefaultCellStyle.ForeColor = Color.DarkGreen;
+                }
+                else if (login.EventType == "Подозрительная активность")
+                {
+                    row.DefaultCellStyle.BackColor = Color.Orange;
+                    row.DefaultCellStyle.ForeColor = Color.DarkOrange;
+                }
+                else if (login.EventType == "Блокировка аккаунта")
+                {
+                    row.DefaultCellStyle.BackColor = Color.Red;
+                    row.DefaultCellStyle.ForeColor = Color.White;
+                }
+                else
+                {
+                    row.DefaultCellStyle.BackColor = Color.White;
+                    row.DefaultCellStyle.ForeColor = Color.Black;
                 }
             }
+
+            // Обновляем статус в строке состояния с деталями
+            string emoji;
+            if (login.EventType == "Успешный вход")
+                emoji = "✅";
+            else if (login.EventType == "Неудачный вход")
+                emoji = "❌";
+            else if (login.EventType == "Выход пользователя")
+                emoji = "👋";
+            else if (login.EventType == "Завершение сеанса")
+                emoji = "🔚";
+            else
+                emoji = "📝";
+
+            statusLabel.Text = $"{emoji} Последнее RDP событие: {login.EventType} - {login.Username}@{login.SourceIP} в {login.TimeStamp:HH:mm:ss}";
         }
 
         private void AddLogMessage(string message, LogLevel level)
@@ -280,27 +1265,20 @@ namespace RDPLoginMonitor
 
             // Устанавливаем цвет в зависимости от уровня
             Color color;
-            switch (level)
-            {
-                case LogLevel.Error:
-                    color = Color.Red;
-                    break;
-                case LogLevel.Warning:
-                    color = Color.Orange;
-                    break;
-                case LogLevel.Success:
-                    color = Color.Green;
-                    break;
-                case LogLevel.Network:
-                    color = Color.Blue;
-                    break;
-                case LogLevel.Security:
-                    color = Color.Purple;
-                    break;
-                default:
-                    color = Color.Black;
-                    break;
-            }
+            if (level == LogLevel.Error)
+                color = Color.Red;
+            else if (level == LogLevel.Warning)
+                color = Color.Orange;
+            else if (level == LogLevel.Success)
+                color = Color.Green;
+            else if (level == LogLevel.Network)
+                color = Color.Blue;
+            else if (level == LogLevel.Security)
+                color = Color.Purple;
+            else if (level == LogLevel.Debug)
+                color = Color.Gray;
+            else
+                color = Color.Black;
 
             logTextBox.SelectionStart = logTextBox.TextLength;
             logTextBox.SelectionLength = 0;
@@ -339,7 +1317,7 @@ namespace RDPLoginMonitor
                 tabControl.SelectedIndex = 3; // Переключаемся на вкладку сети
             }
 
-            AddLogMessage($"Обнаружено новое устройство: {device.DeviceType} {device.IPAddress} ({device.Hostname}) - {riskLevel}", LogLevel.Network);
+            AddLogMessage($"🌐 Обнаружено новое устройство: {device.DeviceType} {device.IPAddress} ({device.Hostname}) - {riskLevel}", LogLevel.Network);
 
             // Звуковое уведомление в зависимости от риска
             if (soundNotificationCheckBox.Checked)
@@ -427,7 +1405,7 @@ namespace RDPLoginMonitor
         private void ShowSuspiciousActivity(string key, int attempts)
         {
             var result = MessageBox.Show(
-                $"🚨 ОБНАРУЖЕНА ПОДОЗРИТЕЛЬНАЯ АКТИВНОСТЬ!\n\n" +
+                $"🚨 ОБНАРУЖЕНА ПОДОЗРИТЕЛЬНАЯ RDP АКТИВНОСТЬ!\n\n" +
                 $"Источник: {key}\n" +
                 $"Количество попыток: {attempts}\n" +
                 $"Время: {DateTime.Now:HH:mm:ss}\n\n" +
@@ -442,7 +1420,7 @@ namespace RDPLoginMonitor
                 tabControl.SelectedIndex = 2; // Переключаемся на вкладку статистики
             }
 
-            AddLogMessage($"ТРЕВОГА! Подозрительная активность от {key} ({attempts} попыток)", LogLevel.Security);
+            AddLogMessage($"🚨 ТРЕВОГА! Подозрительная RDP активность от {key} ({attempts} попыток)", LogLevel.Security);
 
             if (soundNotificationCheckBox.Checked)
             {
@@ -506,7 +1484,7 @@ namespace RDPLoginMonitor
             scanNetworkButton.Enabled = false;
             scanNetworkButton.Text = "Сканирование...";
 
-            AddLogMessage("Начинаем принудительное сканирование сети...", LogLevel.Info);
+            AddLogMessage("🔍 Начинаем принудительное сканирование сети...", LogLevel.Info);
 
             Task.Run(() =>
             {
@@ -516,7 +1494,7 @@ namespace RDPLoginMonitor
                 {
                     scanNetworkButton.Enabled = true;
                     scanNetworkButton.Text = "🔍 Сканировать сеть";
-                    AddLogMessage("Сканирование сети завершено", LogLevel.Network);
+                    AddLogMessage("✅ Сканирование сети завершено", LogLevel.Network);
 
                     // Показываем диагностическую информацию
                     var deviceCount = _networkDevices.Count;
@@ -543,7 +1521,7 @@ namespace RDPLoginMonitor
         private void AutoScanTimer_Tick(object sender, EventArgs e)
         {
             // Автоматическое полное сканирование сети
-            AddLogMessage("Запущено автоматическое сканирование сети...", LogLevel.Network);
+            AddLogMessage("🔄 Запущено автоматическое сканирование сети...", LogLevel.Network);
             Task.Run(() => _networkMonitor.PerformNetworkScan());
         }
 
@@ -558,12 +1536,12 @@ namespace RDPLoginMonitor
                     var newInterval = (int)numUpDown.Value * 1000; // секунды в миллисекунды
                     _autoScanTimer.Interval = newInterval;
 
-                    AddLogMessage($"Интервал автосканирования изменен на {numUpDown.Value} секунд", LogLevel.Info);
+                    AddLogMessage($"⚙️ Интервал автосканирования изменен на {numUpDown.Value} секунд", LogLevel.Info);
                 }
             }
             catch (Exception ex)
             {
-                AddLogMessage($"Ошибка изменения интервала: {ex.Message}", LogLevel.Error);
+                AddLogMessage($"❌ Ошибка изменения интервала: {ex.Message}", LogLevel.Error);
             }
         }
 
@@ -577,22 +1555,26 @@ namespace RDPLoginMonitor
                     if (checkBox.Checked && _monitor?.IsRunning == true)
                     {
                         _autoScanTimer.Start();
-                        AddLogMessage("Автоматическое сканирование включено", LogLevel.Info);
+                        AddLogMessage("🔄 Автоматическое сканирование включено", LogLevel.Info);
                     }
                     else
                     {
                         _autoScanTimer.Stop();
-                        AddLogMessage("Автоматическое сканирование выключено", LogLevel.Warning);
+                        AddLogMessage("⏸️ Автоматическое сканирование выключено", LogLevel.Warning);
                     }
                 }
             }
             catch (Exception ex)
             {
-                AddLogMessage($"Ошибка переключения автосканирования: {ex.Message}", LogLevel.Error);
+                AddLogMessage($"❌ Ошибка переключения автосканирования: {ex.Message}", LogLevel.Error);
             }
         }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            // Останавливаем тест если он запущен
+            _isRDPTestRunning = false;
+
             if (_monitor?.IsRunning == true)
             {
                 _monitor.StopMonitoring();
@@ -601,6 +1583,17 @@ namespace RDPLoginMonitor
             if (_networkMonitor?.IsRunning == true)
             {
                 _networkMonitor.StopMonitoring();
+            }
+
+            // Освобождаем EventLogWatcher
+            if (_eventWatcher != null)
+            {
+                try
+                {
+                    _eventWatcher.Dispose();
+                    _eventWatcher = null;
+                }
+                catch { }
             }
 
             _statsTimer?.Stop();

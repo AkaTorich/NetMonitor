@@ -15,6 +15,9 @@ namespace RDPLoginMonitor
         private Button clearButton;
         private Button saveButton;
         private Button scanNetworkButton;
+        private Button diagnosticButton; // Кнопка диагностики
+        private Button testRDPButton; // НОВАЯ КНОПКА RDP тест
+        private Button diagNetworkButton; // НОВАЯ КНОПКА MAC тест
         private NumericUpDown maxAttemptsNum;
         private NumericUpDown timeWindowNum;
         private Label statusLabel;
@@ -65,6 +68,8 @@ namespace RDPLoginMonitor
             this.clearButton = new System.Windows.Forms.Button();
             this.saveButton = new System.Windows.Forms.Button();
             this.scanNetworkButton = new System.Windows.Forms.Button();
+            this.diagnosticButton = new System.Windows.Forms.Button();
+            this.testRDPButton = new System.Windows.Forms.Button();
             this.maxAttemptsLabel = new System.Windows.Forms.Label();
             this.maxAttemptsNum = new System.Windows.Forms.NumericUpDown();
             this.timeWindowLabel = new System.Windows.Forms.Label();
@@ -75,6 +80,8 @@ namespace RDPLoginMonitor
             this.autoScanIntervalNum = new System.Windows.Forms.NumericUpDown();
             this.autoScanCheckBox = new System.Windows.Forms.CheckBox();
             this.statusLabel = new System.Windows.Forms.Label();
+            this.diagNetworkButton = new System.Windows.Forms.Button();
+            this.testInfoLabel = new System.Windows.Forms.Label();
             this.statsPanel = new System.Windows.Forms.Panel();
             this.totalAttemptsLabel = new System.Windows.Forms.Label();
             this.failedAttemptsLabel = new System.Windows.Forms.Label();
@@ -112,6 +119,8 @@ namespace RDPLoginMonitor
             this.controlPanel.Controls.Add(this.clearButton);
             this.controlPanel.Controls.Add(this.saveButton);
             this.controlPanel.Controls.Add(this.scanNetworkButton);
+            this.controlPanel.Controls.Add(this.diagnosticButton);
+            this.controlPanel.Controls.Add(this.testRDPButton);
             this.controlPanel.Controls.Add(this.maxAttemptsLabel);
             this.controlPanel.Controls.Add(this.maxAttemptsNum);
             this.controlPanel.Controls.Add(this.timeWindowLabel);
@@ -122,10 +131,12 @@ namespace RDPLoginMonitor
             this.controlPanel.Controls.Add(this.autoScanIntervalNum);
             this.controlPanel.Controls.Add(this.autoScanCheckBox);
             this.controlPanel.Controls.Add(this.statusLabel);
+            this.controlPanel.Controls.Add(this.diagNetworkButton);
+            this.controlPanel.Controls.Add(this.testInfoLabel);
             this.controlPanel.Dock = System.Windows.Forms.DockStyle.Top;
             this.controlPanel.Location = new System.Drawing.Point(0, 0);
             this.controlPanel.Name = "controlPanel";
-            this.controlPanel.Size = new System.Drawing.Size(1184, 100);
+            this.controlPanel.Size = new System.Drawing.Size(1315, 120);
             this.controlPanel.TabIndex = 0;
             // 
             // startButton
@@ -193,6 +204,32 @@ namespace RDPLoginMonitor
             this.scanNetworkButton.Text = "🔍 Сканировать сеть";
             this.scanNetworkButton.UseVisualStyleBackColor = false;
             this.scanNetworkButton.Click += new System.EventHandler(this.ScanNetworkButton_Click);
+            // 
+            // diagnosticButton
+            // 
+            this.diagnosticButton.BackColor = System.Drawing.Color.Plum;
+            this.diagnosticButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.diagnosticButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.diagnosticButton.Location = new System.Drawing.Point(590, 10);
+            this.diagnosticButton.Name = "diagnosticButton";
+            this.diagnosticButton.Size = new System.Drawing.Size(120, 35);
+            this.diagnosticButton.TabIndex = 15;
+            this.diagnosticButton.Text = "🔍 Диагностика";
+            this.diagnosticButton.UseVisualStyleBackColor = false;
+            this.diagnosticButton.Click += new System.EventHandler(this.DiagnosticButton_Click);
+            // 
+            // testRDPButton
+            // 
+            this.testRDPButton.BackColor = System.Drawing.Color.LightGreen;
+            this.testRDPButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.testRDPButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.testRDPButton.Location = new System.Drawing.Point(720, 10);
+            this.testRDPButton.Name = "testRDPButton";
+            this.testRDPButton.Size = new System.Drawing.Size(90, 35);
+            this.testRDPButton.TabIndex = 16;
+            this.testRDPButton.Text = "🎯 RDP Тест";
+            this.testRDPButton.UseVisualStyleBackColor = false;
+            this.testRDPButton.Click += new System.EventHandler(this.TestRDPButton_Click);
             // 
             // maxAttemptsLabel
             // 
@@ -276,9 +313,9 @@ namespace RDPLoginMonitor
             // autoScanLabel
             // 
             this.autoScanLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
-            this.autoScanLabel.Location = new System.Drawing.Point(633, 54);
+            this.autoScanLabel.Location = new System.Drawing.Point(620, 54);
             this.autoScanLabel.Name = "autoScanLabel";
-            this.autoScanLabel.Size = new System.Drawing.Size(126, 20);
+            this.autoScanLabel.Size = new System.Drawing.Size(140, 20);
             this.autoScanLabel.TabIndex = 11;
             this.autoScanLabel.Text = "Автосканирование (сек):";
             // 
@@ -317,11 +354,35 @@ namespace RDPLoginMonitor
             // 
             this.statusLabel.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold);
             this.statusLabel.ForeColor = System.Drawing.Color.Blue;
-            this.statusLabel.Location = new System.Drawing.Point(830, 15);
+            this.statusLabel.Location = new System.Drawing.Point(946, 15);
             this.statusLabel.Name = "statusLabel";
-            this.statusLabel.Size = new System.Drawing.Size(200, 30);
+            this.statusLabel.Size = new System.Drawing.Size(350, 30);
             this.statusLabel.TabIndex = 14;
             this.statusLabel.Text = "Готов к работе";
+            // 
+            // diagNetworkButton
+            // 
+            this.diagNetworkButton.BackColor = System.Drawing.Color.LightCyan;
+            this.diagNetworkButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.diagNetworkButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.diagNetworkButton.Location = new System.Drawing.Point(820, 10);
+            this.diagNetworkButton.Name = "diagNetworkButton";
+            this.diagNetworkButton.Size = new System.Drawing.Size(120, 35);
+            this.diagNetworkButton.TabIndex = 19;
+            this.diagNetworkButton.Text = "🌐 Диаг. сети";
+            this.diagNetworkButton.UseVisualStyleBackColor = false;
+            this.diagNetworkButton.Click += new System.EventHandler(this.DiagNetworkButton_Click);
+            // 
+            // testInfoLabel
+            // 
+            this.testInfoLabel.Font = new System.Drawing.Font("Segoe UI", 8F);
+            this.testInfoLabel.ForeColor = System.Drawing.Color.DarkBlue;
+            this.testInfoLabel.Location = new System.Drawing.Point(10, 85);
+            this.testInfoLabel.Name = "testInfoLabel";
+            this.testInfoLabel.Size = new System.Drawing.Size(1000, 25);
+            this.testInfoLabel.TabIndex = 17;
+            this.testInfoLabel.Text = "💡 Совет: Для проверки RDP используй кнопку \'RDP Тест\'. В тихом режиме меньше соо" +
+    "бщений, в подробном - все события.";
             // 
             // statsPanel
             // 
@@ -334,7 +395,7 @@ namespace RDPLoginMonitor
             this.statsPanel.Dock = System.Windows.Forms.DockStyle.Bottom;
             this.statsPanel.Location = new System.Drawing.Point(0, 706);
             this.statsPanel.Name = "statsPanel";
-            this.statsPanel.Size = new System.Drawing.Size(1184, 50);
+            this.statsPanel.Size = new System.Drawing.Size(1315, 50);
             this.statsPanel.TabIndex = 1;
             // 
             // totalAttemptsLabel
@@ -384,11 +445,11 @@ namespace RDPLoginMonitor
             this.tabControl.Controls.Add(this.networkTab);
             this.tabControl.Dock = System.Windows.Forms.DockStyle.Fill;
             this.tabControl.Font = new System.Drawing.Font("Segoe UI", 10F);
-            this.tabControl.Location = new System.Drawing.Point(0, 100);
+            this.tabControl.Location = new System.Drawing.Point(0, 120);
             this.tabControl.Name = "tabControl";
             this.tabControl.Padding = new System.Drawing.Point(3, 3);
             this.tabControl.SelectedIndex = 0;
-            this.tabControl.Size = new System.Drawing.Size(1184, 606);
+            this.tabControl.Size = new System.Drawing.Size(1315, 586);
             this.tabControl.TabIndex = 2;
             // 
             // logTab
@@ -396,9 +457,10 @@ namespace RDPLoginMonitor
             this.logTab.Controls.Add(this.logGrid);
             this.logTab.Location = new System.Drawing.Point(4, 26);
             this.logTab.Name = "logTab";
-            this.logTab.Size = new System.Drawing.Size(1176, 576);
+            this.logTab.Size = new System.Drawing.Size(1307, 556);
             this.logTab.TabIndex = 0;
             this.logTab.Text = "🔐 Журнал RDP";
+            this.logTab.UseVisualStyleBackColor = true;
             // 
             // logGrid
             // 
@@ -414,7 +476,7 @@ namespace RDPLoginMonitor
             this.logGrid.Name = "logGrid";
             this.logGrid.ReadOnly = true;
             this.logGrid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
-            this.logGrid.Size = new System.Drawing.Size(1176, 576);
+            this.logGrid.Size = new System.Drawing.Size(1307, 556);
             this.logGrid.TabIndex = 0;
             // 
             // textLogTab
@@ -422,9 +484,10 @@ namespace RDPLoginMonitor
             this.textLogTab.Controls.Add(this.logTextBox);
             this.textLogTab.Location = new System.Drawing.Point(4, 26);
             this.textLogTab.Name = "textLogTab";
-            this.textLogTab.Size = new System.Drawing.Size(192, 70);
+            this.textLogTab.Size = new System.Drawing.Size(1276, 556);
             this.textLogTab.TabIndex = 1;
             this.textLogTab.Text = "📝 Текстовый лог";
+            this.textLogTab.UseVisualStyleBackColor = true;
             // 
             // logTextBox
             // 
@@ -436,7 +499,7 @@ namespace RDPLoginMonitor
             this.logTextBox.Location = new System.Drawing.Point(0, 0);
             this.logTextBox.Name = "logTextBox";
             this.logTextBox.ReadOnly = true;
-            this.logTextBox.Size = new System.Drawing.Size(192, 70);
+            this.logTextBox.Size = new System.Drawing.Size(1276, 556);
             this.logTextBox.TabIndex = 0;
             this.logTextBox.Text = "";
             // 
@@ -445,9 +508,10 @@ namespace RDPLoginMonitor
             this.statsTab.Controls.Add(this.statisticsView);
             this.statsTab.Location = new System.Drawing.Point(4, 26);
             this.statsTab.Name = "statsTab";
-            this.statsTab.Size = new System.Drawing.Size(192, 70);
+            this.statsTab.Size = new System.Drawing.Size(1276, 556);
             this.statsTab.TabIndex = 2;
             this.statsTab.Text = "📊 Статистика угроз";
+            this.statsTab.UseVisualStyleBackColor = true;
             // 
             // statisticsView
             // 
@@ -458,7 +522,7 @@ namespace RDPLoginMonitor
             this.statisticsView.HideSelection = false;
             this.statisticsView.Location = new System.Drawing.Point(0, 0);
             this.statisticsView.Name = "statisticsView";
-            this.statisticsView.Size = new System.Drawing.Size(192, 70);
+            this.statisticsView.Size = new System.Drawing.Size(1276, 556);
             this.statisticsView.TabIndex = 0;
             this.statisticsView.UseCompatibleStateImageBehavior = false;
             this.statisticsView.View = System.Windows.Forms.View.Details;
@@ -468,9 +532,10 @@ namespace RDPLoginMonitor
             this.networkTab.Controls.Add(this.networkGrid);
             this.networkTab.Location = new System.Drawing.Point(4, 26);
             this.networkTab.Name = "networkTab";
-            this.networkTab.Size = new System.Drawing.Size(1176, 576);
+            this.networkTab.Size = new System.Drawing.Size(1276, 556);
             this.networkTab.TabIndex = 3;
             this.networkTab.Text = "🌐 Сетевые устройства";
+            this.networkTab.UseVisualStyleBackColor = true;
             // 
             // networkGrid
             // 
@@ -488,20 +553,20 @@ namespace RDPLoginMonitor
             this.networkGrid.ReadOnly = true;
             this.networkGrid.RowHeadersVisible = false;
             this.networkGrid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
-            this.networkGrid.Size = new System.Drawing.Size(1176, 576);
+            this.networkGrid.Size = new System.Drawing.Size(1276, 556);
             this.networkGrid.TabIndex = 0;
             // 
             // MainForm
             // 
-            this.ClientSize = new System.Drawing.Size(1184, 756);
+            this.ClientSize = new System.Drawing.Size(1315, 756);
             this.Controls.Add(this.tabControl);
             this.Controls.Add(this.controlPanel);
             this.Controls.Add(this.statsPanel);
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
-            this.MinimumSize = new System.Drawing.Size(1000, 600);
+            this.MinimumSize = new System.Drawing.Size(1300, 650);
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "RDP & Network Security Monitor v2.0";
+            this.Text = "RDP & Network Security Monitor v2.1";
             this.controlPanel.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)(this.maxAttemptsNum)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.timeWindowNum)).EndInit();
@@ -519,5 +584,6 @@ namespace RDPLoginMonitor
         }
 
         private Label autoScanLabel;
+        private Label testInfoLabel; // Новый элемент для подсказок
     }
 }

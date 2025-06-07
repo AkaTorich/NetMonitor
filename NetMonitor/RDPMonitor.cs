@@ -3,62 +3,31 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.Eventing.Reader;
 using System.IO;
-using System.Net;
-using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.Linq;
+using System.Security.Principal;
 
 namespace RDPLoginMonitor
 {
-    public enum LogLevel
-    {
-        Info,
-        Warning,
-        Error,
-        Success,
-        Network,
-        Security
-    }
-
-    // Модель попытки входа RDP
-    public class RDPFailedLogin
-    {
-        public DateTime TimeStamp { get; set; }
-        public string Username { get; set; }
-        public string SourceIP { get; set; }
-        public string Computer { get; set; }
-        public int EventId { get; set; }
-        public string Description { get; set; }
-        public string Status { get; set; }
-        public string EventType { get; set; }
-    }
-
-    // Модель сетевого устройства
-    public class NetworkDevice
-    {
-        public string IPAddress { get; set; }
-        public string MACAddress { get; set; }
-        public string Hostname { get; set; }
-        public string Vendor { get; set; }
-        public string DeviceType { get; set; }
-        public string OperatingSystem { get; set; }
-        public string Status { get; set; }
-        public DateTime FirstSeen { get; set; }
-        public DateTime LastSeen { get; set; }
-        public bool IsNew { get; set; }
-        public List<int> OpenPorts { get; set; } = new List<int>();
-        public string Description { get; set; }
-    }
-
-    // Монитор RDP событий
+    /// <summary>
+    /// Монитор RDP событий - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ (устраняет зависание)
+    /// </summary>
     public class RDPMonitor
     {
         private readonly Dictionary<string, int> _failedAttempts = new Dictionary<string, int>();
         private readonly Dictionary<string, DateTime> _lastAttempt = new Dictionary<string, DateTime>();
         private readonly object _lockObject = new object();
         private bool _isRunning = false;
+        private EventLogWatcher _watcher;
+        private EventLog _eventLog;
+
+        // НОВЫЕ ПОЛЯ ДЛЯ ОПТИМИЗАЦИИ
+        private CancellationTokenSource _cancellationTokenSource;
+        private Task _monitoringTask;
+        private readonly int MAX_EVENTS_TO_PROCESS = 100; // Ограничиваем количество событий
+        private readonly TimeSpan STARTUP_SCAN_WINDOW = TimeSpan.FromMinutes(30); // Только последние 30 минут при запуске
 
         public int MaxFailedAttempts { get; set; } = 5;
         public TimeSpan TimeWindow { get; set; } = TimeSpan.FromMinutes(15);
@@ -68,76 +37,463 @@ namespace RDPLoginMonitor
         public event Action<string, int> OnSuspiciousActivity;
         public event Action<string, LogLevel> OnLogMessage;
 
+        public bool IsRunningAsAdministrator()
+        {
+            try
+            {
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                {
+                    WindowsPrincipal principal = new WindowsPrincipal(identity);
+                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public void StartMonitoring()
         {
             if (_isRunning) return;
+
+            // Проверяем права администратора
+            if (!IsRunningAsAdministrator())
+            {
+                WriteLog("ВНИМАНИЕ: Программа запущена не от имени администратора. Доступ к Security логам может быть ограничен.", LogLevel.Warning);
+            }
+
             _isRunning = true;
-            Task.Run(() => MonitorEventLog());
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            WriteLog("Запускаем RDP Monitor...", LogLevel.Info);
+
+            // ИСПРАВЛЕНИЕ: Быстрая проверка доступности без зависания
+            Task.Run(() =>
+            {
+                if (!QuickCheckEventLogAccess())
+                {
+                    WriteLog("Не удается получить доступ к журналу Security. Пытаемся использовать альтернативные методы.", LogLevel.Warning);
+                }
+
+                // Запускаем мониторинг в отдельной задаче
+                _monitoringTask = Task.Run(() => MonitorEventLogOptimized(_cancellationTokenSource.Token), _cancellationTokenSource.Token);
+            });
+
             WriteLog("RDP Monitor запущен", LogLevel.Info);
+        }
+
+        // НОВЫЙ МЕТОД: Быстрая проверка доступа без чтения всех событий
+        private bool QuickCheckEventLogAccess()
+        {
+            try
+            {
+                using (var eventLog = new EventLog("Security"))
+                {
+                    var count = eventLog.Entries.Count;
+                    WriteLog($"Доступ к журналу Security получен. Найдено {count} записей.", LogLevel.Success);
+
+                    // ВАЖНО: Не читаем все события сразу!
+                    if (count > 10000)
+                    {
+                        WriteLog($"Большой журнал ({count} записей). Будем читать только последние события.", LogLevel.Info);
+                    }
+
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка доступа к журналу Security: {ex.Message}", LogLevel.Error);
+                return false;
+            }
         }
 
         public void StopMonitoring()
         {
+            WriteLog("Останавливаем RDP Monitor...", LogLevel.Info);
+
             _isRunning = false;
+
+            // ИСПРАВЛЕНИЕ: Корректная остановка с CancellationToken
+            if (_cancellationTokenSource != null)
+            {
+                _cancellationTokenSource.Cancel();
+            }
+
+            // Ждем завершения задачи мониторинга
+            if (_monitoringTask != null)
+            {
+                try
+                {
+                    _monitoringTask.Wait(TimeSpan.FromSeconds(5)); // Ждем максимум 5 секунд
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Ошибка при остановке задачи мониторинга: {ex.Message}", LogLevel.Warning);
+                }
+            }
+
+            // Безопасное закрытие EventLogWatcher
+            if (_watcher != null)
+            {
+                try
+                {
+                    _watcher.Enabled = false;
+                    _watcher.EventRecordWritten -= OnEventRecordWritten;
+                    _watcher.Dispose();
+                    _watcher = null;
+                    WriteLog("EventLogWatcher остановлен и освобожден", LogLevel.Info);
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Ошибка остановки EventLogWatcher: {ex.Message}", LogLevel.Warning);
+                }
+            }
+
+            // Безопасное закрытие EventLog
+            if (_eventLog != null)
+            {
+                try
+                {
+                    _eventLog.EnableRaisingEvents = false;
+                    _eventLog.EntryWritten -= EventLog_EntryWritten;
+                    _eventLog.Dispose();
+                    _eventLog = null;
+                    WriteLog("EventLog остановлен и освобожден", LogLevel.Info);
+                }
+                catch (Exception ex)
+                {
+                    WriteLog($"Ошибка остановки EventLog: {ex.Message}", LogLevel.Warning);
+                }
+            }
+
+            // Освобождаем ресурсы
+            if (_cancellationTokenSource != null)
+            {
+                _cancellationTokenSource.Dispose();
+                _cancellationTokenSource = null;
+            }
+
             WriteLog("RDP Monitor остановлен", LogLevel.Warning);
         }
 
-        private void MonitorEventLog()
+        // НОВЫЙ ОПТИМИЗИРОВАННЫЙ МЕТОД МОНИТОРИНГА
+        private void MonitorEventLogOptimized(CancellationToken cancellationToken)
         {
             try
             {
-                // Используем EventLogQuery с правильным конструктором
+                // Метод 1: Пытаемся использовать EventLogWatcher
+                WriteLog("Пытаемся использовать EventLogWatcher...", LogLevel.Debug);
+
                 var query = new EventLogQuery("Security", PathType.LogName,
-                    "*[System[EventID=4625 or EventID=4624 or EventID=4647 or EventID=4634]]");
+                    "*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4778 or EventID=4779)]]");
 
-                using (var watcher = new EventLogWatcher(query))
+                _watcher = new EventLogWatcher(query);
+                _watcher.EventRecordWritten += OnEventRecordWritten;
+                _watcher.Enabled = true;
+
+                WriteLog("EventLogWatcher успешно запущен. Мониторинг событий: 4624, 4625, 4634, 4647, 4778, 4779", LogLevel.Success);
+
+                // ИСПРАВЛЕНИЕ: Читаем недавние события без зависания
+                ReadRecentEventsOptimized(cancellationToken);
+
+                // Основной цикл мониторинга
+                while (_isRunning && !cancellationToken.IsCancellationRequested)
                 {
-                    watcher.EventRecordWritten += OnEventRecordWritten;
-                    watcher.Enabled = true;
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                    WriteLog("Мониторинг событий входа в систему активен", LogLevel.Success);
+                    // Периодически очищаем старые записи
+                    CleanupOldEntries();
 
-                    while (_isRunning)
-                    {
-                        Thread.Sleep(1000);
-                        CleanupOldEntries();
-                    }
-
-                    watcher.Enabled = false;
+                    // Проверяем состояние каждые 2 секунды
+                    Thread.Sleep(2000);
                 }
+
+                if (_watcher != null && _watcher.Enabled)
+                {
+                    _watcher.Enabled = false;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                WriteLog("Мониторинг остановлен по запросу пользователя", LogLevel.Info);
             }
             catch (Exception ex)
             {
-                WriteLog($"Ошибка мониторинга: {ex.Message}", LogLevel.Error);
+                WriteLog($"Ошибка EventLogWatcher: {ex.Message}", LogLevel.Error);
+                WriteLog("Переключаемся на EventLog fallback...", LogLevel.Info);
 
-                // Fallback к простому мониторингу через EventLog
-                MonitorEventLogFallback();
+                try
+                {
+                    // Fallback к обычному EventLog
+                    MonitorEventLogFallbackOptimized(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    WriteLog("Fallback мониторинг остановлен по запросу пользователя", LogLevel.Info);
+                }
+                catch (Exception fallbackEx)
+                {
+                    WriteLog($"Ошибка в fallback режиме: {fallbackEx.Message}", LogLevel.Error);
+                }
             }
         }
 
-        private void MonitorEventLogFallback()
+        // ОПТИМИЗИРОВАННОЕ ЧТЕНИЕ НЕДАВНИХ СОБЫТИЙ
+        private void ReadRecentEventsOptimized(CancellationToken cancellationToken)
         {
             try
             {
-                WriteLog("Переключение на альтернативный метод мониторинга", LogLevel.Info);
+                WriteLog("Читаем последние RDP события...", LogLevel.Debug);
 
-                var eventLog = new EventLog("Security");
-                eventLog.EntryWritten += EventLog_EntryWritten;
-                eventLog.EnableRaisingEvents = true;
+                // ИСПРАВЛЕНИЕ: Ограничиваем временное окно для избежания зависания
+                var timeFilter = DateTime.Now.Subtract(STARTUP_SCAN_WINDOW);
+                var timeFilterString = timeFilter.ToString("yyyy-MM-ddTHH:mm:ss.000Z");
 
-                while (_isRunning)
+                var query = new EventLogQuery("Security", PathType.LogName,
+                    $"*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4778 or EventID=4779) and TimeCreated[@SystemTime >= '{timeFilterString}']]]");
+
+                using (var reader = new EventLogReader(query))
                 {
+                    EventRecord eventRecord;
+                    int count = 0;
+                    var processedEvents = 0;
+
+                    while ((eventRecord = reader.ReadEvent()) != null &&
+                           count < MAX_EVENTS_TO_PROCESS &&
+                           !cancellationToken.IsCancellationRequested)
+                    {
+                        try
+                        {
+                            var login = ParseEventRecord(eventRecord);
+                            if (login != null && ShouldProcessEvent(login))
+                            {
+                                ProcessEventRecord(login, (int)eventRecord.Id);
+                                processedEvents++;
+                            }
+                            count++;
+                        }
+                        catch (Exception ex)
+                        {
+                            WriteLog($"Ошибка обработки события: {ex.Message}", LogLevel.Warning);
+                        }
+                        finally
+                        {
+                            eventRecord.Dispose();
+                        }
+
+                        // Проверяем отмену каждые 10 событий
+                        if (count % 10 == 0)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+                    }
+
+                    WriteLog($"Обработано {processedEvents} недавних RDP событий из {count} просмотренных", LogLevel.Info);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // Передаем отмену дальше
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка чтения последних событий: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        // ОПТИМИЗИРОВАННЫЙ FALLBACK РЕЖИМ
+        private void MonitorEventLogFallbackOptimized(CancellationToken cancellationToken)
+        {
+            try
+            {
+                WriteLog("Используем EventLog fallback метод", LogLevel.Info);
+
+                _eventLog = new EventLog("Security");
+                _eventLog.EntryWritten += EventLog_EntryWritten;
+                _eventLog.EnableRaisingEvents = true;
+
+                WriteLog("EventLog fallback активен", LogLevel.Success);
+
+                // ИСПРАВЛЕНИЕ: Быстрое чтение недавних записей без зависания
+                ReadRecentEventLogEntriesOptimized(cancellationToken);
+
+                while (_isRunning && !cancellationToken.IsCancellationRequested)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
                     Thread.Sleep(1000);
                     CleanupOldEntries();
                 }
 
-                eventLog.EnableRaisingEvents = false;
-                eventLog.Dispose();
+                if (_eventLog != null)
+                {
+                    _eventLog.EnableRaisingEvents = false;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // Передаем отмену дальше
             }
             catch (Exception ex)
             {
-                WriteLog($"Ошибка альтернативного мониторинга: {ex.Message}", LogLevel.Error);
+                WriteLog($"Ошибка EventLog fallback: {ex.Message}", LogLevel.Error);
+                WriteLog("Переключаемся на polling режим...", LogLevel.Info);
+                MonitorByPollingOptimized(cancellationToken);
             }
+        }
+
+        // ОПТИМИЗИРОВАННОЕ ЧТЕНИЕ EVENTLOG ЗАПИСЕЙ
+        private void ReadRecentEventLogEntriesOptimized(CancellationToken cancellationToken)
+        {
+            try
+            {
+                WriteLog("Читаем последние записи из EventLog...", LogLevel.Debug);
+
+                var totalEntries = _eventLog.Entries.Count;
+                var cutoffTime = DateTime.Now.Subtract(STARTUP_SCAN_WINDOW);
+
+                // ИСПРАВЛЕНИЕ: Читаем только последние записи, не все подряд
+                var startIndex = Math.Max(0, totalEntries - MAX_EVENTS_TO_PROCESS);
+                var processedCount = 0;
+
+                for (int i = totalEntries - 1; i >= startIndex && !cancellationToken.IsCancellationRequested; i--)
+                {
+                    try
+                    {
+                        var entry = _eventLog.Entries[i];
+
+                        // Прерываем если событие слишком старое
+                        if (entry.TimeGenerated < cutoffTime)
+                            break;
+
+                        if (IsInterestingEventId((int)entry.InstanceId))
+                        {
+                            var login = ParseEventLogEntry(entry);
+                            if (login != null && ShouldProcessEvent(login))
+                            {
+                                ProcessEventLogEntry(login, (int)entry.InstanceId);
+                                processedCount++;
+                            }
+                        }
+
+                        // Проверяем отмену каждые 10 записей
+                        if ((totalEntries - i) % 10 == 0)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteLog($"Ошибка обработки записи EventLog: {ex.Message}", LogLevel.Warning);
+                    }
+                }
+
+                WriteLog($"Обработано {processedCount} недавних EventLog записей", LogLevel.Info);
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // Передаем отмену дальше
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка чтения EventLog записей: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        // ОПТИМИЗИРОВАННЫЙ POLLING РЕЖИМ
+        private void MonitorByPollingOptimized(CancellationToken cancellationToken)
+        {
+            try
+            {
+                WriteLog("Используем polling режим (проверка каждые 10 секунд)", LogLevel.Info);
+
+                var lastCheck = DateTime.Now.AddMinutes(-5);
+
+                while (_isRunning && !cancellationToken.IsCancellationRequested)
+                {
+                    try
+                    {
+                        var timeFilterString = lastCheck.ToString("yyyy-MM-ddTHH:mm:ss.000Z");
+                        var query = new EventLogQuery("Security", PathType.LogName,
+                            $"*[System[(EventID=4624 or EventID=4625 or EventID=4634 or EventID=4647 or EventID=4778 or EventID=4779) and TimeCreated[@SystemTime >= '{timeFilterString}']]]");
+
+                        using (var reader = new EventLogReader(query))
+                        {
+                            EventRecord eventRecord;
+                            int count = 0;
+
+                            while ((eventRecord = reader.ReadEvent()) != null &&
+                                   count < 50 && // Ограничиваем количество в polling режиме
+                                   !cancellationToken.IsCancellationRequested)
+                            {
+                                try
+                                {
+                                    var login = ParseEventRecord(eventRecord);
+                                    if (login != null && ShouldProcessEvent(login))
+                                    {
+                                        ProcessEventRecord(login, (int)eventRecord.Id);
+                                        count++;
+                                    }
+                                }
+                                finally
+                                {
+                                    eventRecord.Dispose();
+                                }
+                            }
+
+                            if (count > 0)
+                            {
+                                WriteLog($"Polling: обнаружено {count} новых событий", LogLevel.Info);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteLog($"Ошибка в polling: {ex.Message}", LogLevel.Error);
+                    }
+
+                    lastCheck = DateTime.Now;
+
+                    // Ждем 10 секунд с проверкой отмены
+                    for (int i = 0; i < 100 && _isRunning && !cancellationToken.IsCancellationRequested; i++)
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                WriteLog("Polling режим остановлен по запросу пользователя", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Критическая ошибка polling: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private bool IsInterestingEventId(int eventId)
+        {
+            return eventId == 4624 || eventId == 4625 || eventId == 4634 ||
+                   eventId == 4647 || eventId == 4778 || eventId == 4779;
+        }
+
+        // УЛУЧШЕННАЯ ФИЛЬТРАЦИЯ СОБЫТИЙ
+        private bool ShouldProcessEvent(RDPFailedLogin login)
+        {
+            // Исключаем только очевидно нерелевантные события
+
+            // Исключаем пустые или системные аккаунты только для LogonType 5
+            if (login.LogonType == "5" &&
+                (string.IsNullOrEmpty(login.Username) ||
+                 login.Username == "СИСТЕМА" ||
+                 login.Username == "SYSTEM"))
+            {
+                return false;
+            }
+
+            // Разрешаем все остальные события для более полного мониторинга
+            return true;
         }
 
         private void EventLog_EntryWritten(object sender, EntryWrittenEventArgs e)
@@ -146,24 +502,24 @@ namespace RDPLoginMonitor
             {
                 var entry = e.Entry;
 
-                // Проверяем интересующие нас события
-                if (entry.InstanceId == 4625 || entry.InstanceId == 4624 ||
-                    entry.InstanceId == 4647 || entry.InstanceId == 4634)
+                if (IsInterestingEventId((int)entry.InstanceId))
                 {
-                    // Проверяем, что это RDP подключение (LogonType 10)
-                    if (entry.Message != null && entry.Message.Contains("Logon Type:\t\t10"))
+                    var login = ParseEventLogEntry(entry);
+                    if (login != null && ShouldProcessEvent(login))
                     {
-                        var login = ParseEventLogEntry(entry);
-                        if (login != null)
+                        // Логируем только важные события (не LogonType 5)
+                        if (login.LogonType != "5")
                         {
-                            ProcessEventLogEntry(login, (int)entry.InstanceId);
+                            WriteLog($"EventRecord {entry.InstanceId}: {login.Username} с {login.SourceIP} (LogonType: {login.LogonType})", LogLevel.Debug);
                         }
+
+                        ProcessEventLogEntry(login, (int)entry.InstanceId);
                     }
                 }
             }
             catch (Exception ex)
             {
-                WriteLog($"Ошибка обработки события EventLog: {ex.Message}", LogLevel.Error);
+                WriteLog($"Ошибка обработки EventLog события: {ex.Message}", LogLevel.Error);
             }
         }
 
@@ -179,16 +535,31 @@ namespace RDPLoginMonitor
                     Description = entry.Message ?? "Нет описания"
                 };
 
-                // Парсим сообщение для извлечения данных
                 var message = entry.Message ?? "";
 
                 // Извлекаем имя пользователя
                 var userMatch = Regex.Match(message, @"Account Name:\s*([^\r\n\t]+)");
+                if (!userMatch.Success)
+                {
+                    userMatch = Regex.Match(message, @"Имя учетной записи:\s*([^\r\n\t]+)");
+                }
                 login.Username = userMatch.Success ? userMatch.Groups[1].Value.Trim() : "Unknown";
 
                 // Извлекаем IP адрес
                 var ipMatch = Regex.Match(message, @"Source Network Address:\s*([^\r\n\t]+)");
+                if (!ipMatch.Success)
+                {
+                    ipMatch = Regex.Match(message, @"Адрес источника в сети:\s*([^\r\n\t]+)");
+                }
                 login.SourceIP = ipMatch.Success ? ipMatch.Groups[1].Value.Trim() : "Unknown";
+
+                // Извлекаем тип входа
+                var logonTypeMatch = Regex.Match(message, @"Logon Type:\s*([^\r\n\t]+)");
+                if (!logonTypeMatch.Success)
+                {
+                    logonTypeMatch = Regex.Match(message, @"Тип входа:\s*([^\r\n\t]+)");
+                }
+                login.LogonType = logonTypeMatch.Success ? logonTypeMatch.Groups[1].Value.Trim() : "Unknown";
 
                 return login;
             }
@@ -201,26 +572,55 @@ namespace RDPLoginMonitor
 
         private void ProcessEventLogEntry(RDPFailedLogin login, int eventId)
         {
+            string status, eventType;
+
             switch (eventId)
             {
-                case 4625: // Неудачный вход
-                    login.Status = "Неудачный";
-                    login.EventType = "Неудачный вход";
+                case 4625:
+                    status = "Неудачный";
+                    eventType = "Неудачный вход";
+                    login.Status = status;
+                    login.EventType = eventType;
                     ProcessFailedLogin(login);
                     break;
-                case 4624: // Успешный вход
-                    login.Status = "Успешный";
-                    login.EventType = "Успешный вход";
+
+                case 4624:
+                    status = "Успешный";
+                    eventType = "Успешный вход";
+                    login.Status = status;
+                    login.EventType = eventType;
                     ProcessSuccessfulLogin(login);
                     break;
-                case 4647: // Инициирован выход пользователем
-                    login.Status = "Выход";
-                    login.EventType = "Выход пользователя";
+
+                case 4647:
+                    status = "Выход";
+                    eventType = "Выход пользователя";
+                    login.Status = status;
+                    login.EventType = eventType;
                     OnFailedLogin?.Invoke(login);
                     break;
-                case 4634: // Сеанс завершен
-                    login.Status = "Завершение сеанса";
-                    login.EventType = "Завершение сеанса";
+
+                case 4634:
+                    status = "Завершение сеанса";
+                    eventType = "Завершение сеанса";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
+
+                case 4778:
+                    status = "Подключение восстановлено";
+                    eventType = "RDP переподключение";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
+
+                case 4779:
+                    status = "Подключение разорвано";
+                    eventType = "RDP отключение";
+                    login.Status = status;
+                    login.EventType = eventType;
                     OnFailedLogin?.Invoke(login);
                     break;
             }
@@ -233,38 +633,81 @@ namespace RDPLoginMonitor
             try
             {
                 var eventRecord = e.EventRecord;
-                var eventId = eventRecord.Id;
+                var eventId = (int)eventRecord.Id;
 
                 var failedLogin = ParseEventRecord(eventRecord);
                 if (failedLogin == null) return;
 
-                switch (eventId)
+                // Логируем только важные события (не LogonType 5)
+                if (failedLogin.LogonType != "5")
                 {
-                    case 4625: // Неудачный вход
-                        failedLogin.Status = "Неудачный";
-                        failedLogin.EventType = "Неудачный вход";
-                        ProcessFailedLogin(failedLogin);
-                        break;
-                    case 4624: // Успешный вход
-                        failedLogin.Status = "Успешный";
-                        failedLogin.EventType = "Успешный вход";
-                        ProcessSuccessfulLogin(failedLogin);
-                        break;
-                    case 4647: // Инициирован выход пользователем
-                        failedLogin.Status = "Выход";
-                        failedLogin.EventType = "Выход пользователя";
-                        OnFailedLogin?.Invoke(failedLogin);
-                        break;
-                    case 4634: // Сеанс завершен
-                        failedLogin.Status = "Завершение сеанса";
-                        failedLogin.EventType = "Завершение сеанса";
-                        OnFailedLogin?.Invoke(failedLogin);
-                        break;
+                    WriteLog($"EventRecord {eventId}: {failedLogin.Username} с {failedLogin.SourceIP} (LogonType: {failedLogin.LogonType})", LogLevel.Debug);
+                }
+
+                if (ShouldProcessEvent(failedLogin))
+                {
+                    ProcessEventRecord(failedLogin, eventId);
                 }
             }
             catch (Exception ex)
             {
-                WriteLog($"Ошибка обработки события: {ex.Message}", LogLevel.Error);
+                WriteLog($"Ошибка обработки EventRecord: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void ProcessEventRecord(RDPFailedLogin login, int eventId)
+        {
+            string status, eventType;
+
+            switch (eventId)
+            {
+                case 4625:
+                    status = "Неудачный";
+                    eventType = "Неудачный вход";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    ProcessFailedLogin(login);
+                    break;
+
+                case 4624:
+                    status = "Успешный";
+                    eventType = "Успешный вход";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    ProcessSuccessfulLogin(login);
+                    break;
+
+                case 4647:
+                    status = "Выход";
+                    eventType = "Выход пользователя";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
+
+                case 4634:
+                    status = "Завершение сеанса";
+                    eventType = "Завершение сеанса";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
+
+                case 4778:
+                    status = "Подключение восстановлено";
+                    eventType = "RDP переподключение";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
+
+                case 4779:
+                    status = "Подключение разорвано";
+                    eventType = "RDP отключение";
+                    login.Status = status;
+                    login.EventType = eventType;
+                    OnFailedLogin?.Invoke(login);
+                    break;
             }
         }
 
@@ -277,25 +720,30 @@ namespace RDPLoginMonitor
                 var login = new RDPFailedLogin
                 {
                     TimeStamp = eventRecord.TimeCreated ?? DateTime.Now,
-                    EventId = eventRecord.Id,
+                    EventId = (int)eventRecord.Id,
                     Computer = eventRecord.MachineName
                 };
 
+                // Для разных типов событий структура может отличаться
                 if (properties.Count > 5)
                 {
                     login.Username = properties[5].Value?.ToString() ?? "Unknown";
                 }
 
-                if (properties.Count > 19)
+                if (properties.Count > 18)
+                {
+                    login.SourceIP = properties[18].Value?.ToString() ?? "Unknown";
+                }
+
+                // Для некоторых событий IP в другом месте
+                if (login.SourceIP == "Unknown" && properties.Count > 19)
                 {
                     login.SourceIP = properties[19].Value?.ToString() ?? "Unknown";
                 }
 
                 if (properties.Count > 8)
                 {
-                    var logonType = properties[8].Value?.ToString();
-                    if (logonType != "10") // Только RDP подключения
-                        return null;
+                    login.LogonType = properties[8].Value?.ToString() ?? "Unknown";
                 }
 
                 login.Description = eventRecord.FormatDescription() ?? "Нет описания";
@@ -304,7 +752,7 @@ namespace RDPLoginMonitor
             }
             catch (Exception ex)
             {
-                WriteLog($"Ошибка парсинга события: {ex.Message}", LogLevel.Error);
+                WriteLog($"Ошибка парсинга EventRecord: {ex.Message}", LogLevel.Error);
                 return null;
             }
         }
@@ -323,7 +771,11 @@ namespace RDPLoginMonitor
                 _failedAttempts[key]++;
                 _lastAttempt[key] = failedLogin.TimeStamp;
 
-                WriteLog($"Неудачный вход: {failedLogin.Username} с {failedLogin.SourceIP} (попытка #{_failedAttempts[key]})", LogLevel.Warning);
+                // Логируем только важные неудачные попытки
+                if (failedLogin.LogonType != "5" && failedLogin.Username != "СИСТЕМА")
+                {
+                    WriteLog($"Неудачный вход: {failedLogin.Username} с {failedLogin.SourceIP} (попытка #{_failedAttempts[key]}, тип: {failedLogin.LogonType})", LogLevel.Warning);
+                }
 
                 OnFailedLogin?.Invoke(failedLogin);
 
@@ -338,7 +790,12 @@ namespace RDPLoginMonitor
 
         private void ProcessSuccessfulLogin(RDPFailedLogin login)
         {
-            WriteLog($"Успешный вход: {login.Username} с {login.SourceIP}", LogLevel.Success);
+            // Логируем только важные успешные входы
+            if (login.LogonType != "5" && login.Username != "СИСТЕМА")
+            {
+                WriteLog($"Успешный вход: {login.Username} с {login.SourceIP} (тип: {login.LogonType})", LogLevel.Success);
+            }
+
             OnFailedLogin?.Invoke(login);
 
             lock (_lockObject)
@@ -398,772 +855,141 @@ namespace RDPLoginMonitor
         }
 
         public bool IsRunning => _isRunning;
-    }
 
-    // Монитор сетевых устройств
-    public class NetworkMonitor
-    {
-        private readonly Dictionary<string, NetworkDevice> _knownDevices = new Dictionary<string, NetworkDevice>();
-        private readonly object _lockObject = new object();
-        private bool _isRunning = false;
-        private readonly Dictionary<string, string> _vendorDatabase;
-
-        public event Action<NetworkDevice> OnNewDeviceDetected;
-        public event Action<NetworkDevice> OnDeviceStatusChanged;
-
-        public NetworkMonitor()
+        // Метод для тестирования
+        public void TestEventLogAccess()
         {
-            _vendorDatabase = InitializeVendorDatabase();
-        }
-
-        public void StartMonitoring()
-        {
-            if (_isRunning) return;
-            _isRunning = true;
-
-            // Выполняем первоначальное сканирование
-            Task.Run(() => PerformNetworkScan());
-        }
-
-        public void StopMonitoring()
-        {
-            _isRunning = false;
-        }
-
-        public void PerformNetworkScan()
-        {
-            if (!_isRunning) return;
+            WriteLog("=== ДИАГНОСТИКА ДОСТУПА К ЖУРНАЛУ СОБЫТИЙ ===", LogLevel.Info);
 
             try
             {
-                var localIP = GetLocalIPAddress();
-                if (string.IsNullOrEmpty(localIP)) return;
+                // Проверяем права администратора
+                WriteLog($"Права администратора: {(IsRunningAsAdministrator() ? "ДА" : "НЕТ")}",
+                    IsRunningAsAdministrator() ? LogLevel.Success : LogLevel.Warning);
 
-                System.Diagnostics.Debug.WriteLine($"Начинаем сканирование с локального IP: {localIP}");
-
-                var networkPrefix = GetNetworkPrefix(localIP);
-                System.Diagnostics.Debug.WriteLine($"Сканируем сеть: {networkPrefix}.1-254");
-
-                // Сначала сканируем ARP таблицу для быстрого обнаружения
-                ScanARPTable();
-
-                // Затем пингуем весь диапазон
-                var tasks = new List<Task>();
-                for (int i = 1; i <= 254; i++)
+                // ИСПРАВЛЕНИЕ: Быстрая проверка без чтения всех событий
+                using (var eventLog = new EventLog("Security"))
                 {
-                    var ip = $"{networkPrefix}.{i}";
-                    tasks.Add(Task.Run(() => ScanDevice(ip)));
-                }
+                    var count = eventLog.Entries.Count;
+                    WriteLog($"Доступ к Security журналу: ДА, записей: {count}", LogLevel.Success);
 
-                Task.WaitAll(tasks.ToArray(), TimeSpan.FromMinutes(3));
+                    // Читаем только последние 20 записей для анализа
+                    WriteLog("Анализ последних 20 записей Security журнала:", LogLevel.Info);
 
-                System.Diagnostics.Debug.WriteLine($"Сканирование завершено. Найдено устройств: {_knownDevices.Count}");
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Ошибка сканирования сети: {ex.Message}");
-            }
-        }
+                    var loginTypeCounts = new Dictionary<string, int>();
+                    var rdpCount = 0;
+                    var entriesAnalyzed = 0;
 
-        // Новый метод для сканирования ARP таблицы
-        private void ScanARPTable()
-        {
-            try
-            {
-                var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
+                    // ИСПРАВЛЕНИЕ: Читаем с конца, ограничиваем количество
+                    for (int i = Math.Max(0, eventLog.Entries.Count - 20); i < eventLog.Entries.Count && entriesAnalyzed < 20; i++)
                     {
-                        FileName = "arp",
-                        Arguments = "-a",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    }
-                };
-
-                process.Start();
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-
-                System.Diagnostics.Debug.WriteLine($"ARP таблица:\n{output}");
-
-                // Парсим ARP таблицу
-                var lines = output.Split('\n');
-                foreach (var line in lines)
-                {
-                    // Ищем строки вида: IP-адрес MAC-адрес тип
-                    var match = Regex.Match(line.Trim(), @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s+(\w+)");
-                    if (match.Success)
-                    {
-                        var ip = match.Groups[1].Value;
-                        var mac = match.Groups[2].Value.ToUpper().Replace("-", ":");
-
-                        System.Diagnostics.Debug.WriteLine($"Найдено в ARP: {ip} -> {mac}");
-
-                        // Создаем устройство из ARP записи
-                        var device = new NetworkDevice
+                        try
                         {
-                            IPAddress = ip,
-                            MACAddress = mac,
-                            Hostname = GetHostname(ip),
-                            Status = "Активен",
-                            LastSeen = DateTime.Now
-                        };
+                            var entry = eventLog.Entries[i];
+                            entriesAnalyzed++;
 
-                        device.Vendor = GetVendorFromMAC(device.MACAddress);
-                        device.DeviceType = DetermineDeviceType(device);
-                        device.OperatingSystem = DetectOperatingSystem(device);
-                        device.OpenPorts = ScanCommonPorts(ip);
-                        device.Description = GenerateDeviceDescription(device);
+                            WriteLog($"  EventID: {entry.InstanceId}, Time: {entry.TimeGenerated:HH:mm:ss}, Source: {entry.Source}", LogLevel.Debug);
 
-                        ProcessDevice(device);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Ошибка сканирования ARP: {ex.Message}");
-            }
-        }
-
-        private void ScanDevice(string ipAddress)
-        {
-            try
-            {
-                using (var ping = new Ping())
-                {
-                    // Увеличиваем timeout для мобильных устройств
-                    var reply = ping.Send(ipAddress, 2000);
-                    if (reply.Status == IPStatus.Success)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Пинг успешен: {ipAddress} ({reply.RoundtripTime}ms)");
-
-                        var device = new NetworkDevice
-                        {
-                            IPAddress = ipAddress,
-                            MACAddress = GetMACAddress(ipAddress),
-                            Hostname = GetHostname(ipAddress),
-                            Status = "Активен",
-                            LastSeen = DateTime.Now
-                        };
-
-                        device.Vendor = GetVendorFromMAC(device.MACAddress);
-                        device.DeviceType = DetermineDeviceType(device);
-                        device.OperatingSystem = DetectOperatingSystem(device);
-                        device.OpenPorts = ScanCommonPorts(ipAddress);
-                        device.Description = GenerateDeviceDescription(device);
-
-                        System.Diagnostics.Debug.WriteLine($"Обработано устройство: {device.IPAddress} -> {device.DeviceType}");
-                        ProcessDevice(device);
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Пинг неудачен: {ipAddress} - {reply.Status}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Ошибка сканирования {ipAddress}: {ex.Message}");
-            }
-        }
-
-        private void ProcessDevice(NetworkDevice device)
-        {
-            lock (_lockObject)
-            {
-                var key = device.IPAddress;
-
-                if (_knownDevices.ContainsKey(key))
-                {
-                    // Обновляем существующее устройство
-                    var existingDevice = _knownDevices[key];
-                    existingDevice.Status = device.Status;
-                    existingDevice.LastSeen = device.LastSeen;
-
-                    OnDeviceStatusChanged?.Invoke(existingDevice);
-                }
-                else
-                {
-                    // Новое устройство
-                    device.FirstSeen = DateTime.Now;
-                    device.IsNew = true;
-                    _knownDevices[key] = device;
-
-                    OnNewDeviceDetected?.Invoke(device);
-                }
-            }
-        }
-
-        public void UpdateDeviceStatuses()
-        {
-            if (!_isRunning) return;
-
-            var devicesToCheck = new List<NetworkDevice>();
-            lock (_lockObject)
-            {
-                devicesToCheck.AddRange(_knownDevices.Values);
-            }
-
-            foreach (var device in devicesToCheck)
-            {
-                Task.Run(() =>
-                {
-                    try
-                    {
-                        using (var ping = new Ping())
-                        {
-                            var reply = ping.Send(device.IPAddress, 1000);
-                            var newStatus = reply.Status == IPStatus.Success ? "Активен" : "Недоступен";
-
-                            if (device.Status != newStatus)
+                            // Анализируем логон тайпы
+                            if (entry.InstanceId == 4624 || entry.InstanceId == 4625)
                             {
-                                device.Status = newStatus;
-                                device.LastSeen = DateTime.Now;
-                                OnDeviceStatusChanged?.Invoke(device);
-                            }
-                        }
-                    }
-                    catch (Exception)
-                    {
-                        device.Status = "Ошибка";
-                        OnDeviceStatusChanged?.Invoke(device);
-                    }
-                });
-            }
-        }
-
-        private string GetLocalIPAddress()
-        {
-            try
-            {
-                // Метод 1: Через NetworkInterface (более надежный)
-                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    if (ni.OperationalStatus == OperationalStatus.Up &&
-                        ni.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                    {
-                        foreach (var addr in ni.GetIPProperties().UnicastAddresses)
-                        {
-                            if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                            {
-                                var ip = addr.Address.ToString();
-                                // Проверяем что это локальная сеть
-                                if (ip.StartsWith("192.168.") || ip.StartsWith("10.") ||
-                                    (ip.StartsWith("172.") && IsInRange172(ip)))
+                                var message = entry.Message ?? "";
+                                var logonTypeMatch = Regex.Match(message, @"Logon Type:\s*([^\r\n\t]+)");
+                                if (logonTypeMatch.Success)
                                 {
-                                    System.Diagnostics.Debug.WriteLine($"Найден локальный IP через NetworkInterface: {ip}");
-                                    return ip;
+                                    var logonType = logonTypeMatch.Groups[1].Value.Trim();
+                                    if (!loginTypeCounts.ContainsKey(logonType))
+                                        loginTypeCounts[logonType] = 0;
+                                    loginTypeCounts[logonType]++;
+
+                                    if (logonType == "10")
+                                    {
+                                        rdpCount++;
+                                        WriteLog($"    *** НАЙДЕН RDP ВХОД! LogonType: {logonType} ***", LogLevel.Success);
+                                    }
                                 }
                             }
                         }
+                        catch (Exception ex)
+                        {
+                            WriteLog($"Ошибка анализа записи: {ex.Message}", LogLevel.Warning);
+                        }
+                    }
+
+                    WriteLog($"--- СТАТИСТИКА ЛОГОН ТАЙПОВ ---", LogLevel.Info);
+                    foreach (var kvp in loginTypeCounts.OrderBy(x => x.Key))
+                    {
+                        var explanation = GetLogonTypeExplanation(kvp.Key);
+                        WriteLog($"  LogonType {kvp.Key}: {kvp.Value} раз - {explanation}", LogLevel.Info);
+                    }
+
+                    WriteLog($"--- ИТОГИ ---", LogLevel.Info);
+                    WriteLog($"Найдено RDP событий (LogonType 10): {rdpCount}",
+                        rdpCount > 0 ? LogLevel.Success : LogLevel.Warning);
+
+                    if (rdpCount == 0)
+                    {
+                        WriteLog("РЕКОМЕНДАЦИИ ДЛЯ RDP ТЕСТИРОВАНИЯ:", LogLevel.Warning);
+                        WriteLog("1. Убедись что RDP включен: Панель управления -> Система -> Удаленный доступ", LogLevel.Info);
+                        WriteLog("2. Попробуй подключиться через RDP клиент (mstsc) к localhost или IP этого компьютера", LogLevel.Info);
+                        WriteLog("3. Включи аудит входов: gpedit.msc -> Audit Policy -> Audit logon events", LogLevel.Info);
+                        WriteLog("4. Проверь что у пользователя есть права на RDP подключение", LogLevel.Info);
                     }
                 }
 
-                // Метод 2: Через DNS (fallback)
-                var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-                foreach (var ip in host.AddressList)
+                // Быстрая проверка EventLogReader
+                WriteLog("Тестируем EventLogReader для RDP событий...", LogLevel.Info);
+                try
                 {
-                    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    var query = new EventLogQuery("Security", PathType.LogName,
+                        "*[System[EventID=4624 or EventID=4625] and EventData[Data[@Name='LogonType']='10']]");
+
+                    using (var reader = new EventLogReader(query))
                     {
-                        var ipStr = ip.ToString();
-                        if (ipStr.StartsWith("192.168.") || ipStr.StartsWith("10.") ||
-                            (ipStr.StartsWith("172.") && IsInRange172(ipStr)))
+                        var rdpEvent = reader.ReadEvent();
+                        if (rdpEvent != null)
                         {
-                            System.Diagnostics.Debug.WriteLine($"Найден локальный IP через DNS: {ipStr}");
-                            return ipStr;
+                            WriteLog("EventLogReader нашел RDP события!", LogLevel.Success);
+                            rdpEvent.Dispose();
+                        }
+                        else
+                        {
+                            WriteLog("EventLogReader не нашел RDP событий (LogonType 10)", LogLevel.Warning);
                         }
                     }
                 }
-
-                // Метод 3: Подключение к внешнему адресу для определения локального IP
-                using (var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork,
-                                                                 System.Net.Sockets.SocketType.Dgram, 0))
+                catch (Exception ex)
                 {
-                    socket.Connect("8.8.8.8", 65530);
-                    var endPoint = socket.LocalEndPoint as System.Net.IPEndPoint;
-                    if (endPoint != null)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"Найден локальный IP через socket: {endPoint.Address}");
-                        return endPoint.Address.ToString();
-                    }
+                    WriteLog($"Ошибка тестирования EventLogReader: {ex.Message}", LogLevel.Warning);
                 }
+
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Ошибка получения локального IP: {ex.Message}");
+                WriteLog($"Ошибка диагностики: {ex.Message}", LogLevel.Error);
             }
 
-            System.Diagnostics.Debug.WriteLine("Используем fallback IP: 192.168.1.100");
-            return "192.168.1.100"; // Fallback
+            WriteLog("=== КОНЕЦ ДИАГНОСТИКИ ===", LogLevel.Info);
         }
 
-        private bool IsInRange172(string ip)
+        private string GetLogonTypeExplanation(string logonType)
         {
-            try
+            var explanations = new Dictionary<string, string>
             {
-                var parts = ip.Split('.');
-                if (parts.Length >= 2)
-                {
-                    var secondOctet = int.Parse(parts[1]);
-                    return secondOctet >= 16 && secondOctet <= 31; // 172.16.0.0 - 172.31.255.255
-                }
-            }
-            catch { }
-            return false;
-        }
-
-        private string GetNetworkPrefix(string ipAddress)
-        {
-            var parts = ipAddress.Split('.');
-            return $"{parts[0]}.{parts[1]}.{parts[2]}";
-        }
-
-        private string GetMACAddress(string ipAddress)
-        {
-            try
-            {
-                var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "arp",
-                        Arguments = $"-a {ipAddress}",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    }
-                };
-
-                process.Start();
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-
-                var match = Regex.Match(output, @"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})");
-                return match.Success ? match.Value.ToUpper() : "Неизвестно";
-            }
-            catch (Exception)
-            {
-                return "Неизвестно";
-            }
-        }
-
-        private string GetHostname(string ipAddress)
-        {
-            try
-            {
-                var hostEntry = System.Net.Dns.GetHostEntry(ipAddress);
-                return hostEntry.HostName;
-            }
-            catch (Exception)
-            {
-                return "Неизвестно";
-            }
-        }
-
-        private string GetVendorFromMAC(string macAddress)
-        {
-            if (string.IsNullOrEmpty(macAddress) || macAddress == "Неизвестно")
-                return "Неизвестно";
-
-            try
-            {
-                var prefix = macAddress.Replace(":", "").Replace("-", "").Substring(0, 6).ToUpper();
-                return _vendorDatabase.ContainsKey(prefix) ? _vendorDatabase[prefix] : "Неизвестно";
-            }
-            catch (Exception)
-            {
-                return "Неизвестно";
-            }
-        }
-
-        private Dictionary<string, string> InitializeVendorDatabase()
-        {
-            // Расширенная база данных производителей с типами устройств
-            return new Dictionary<string, string>
-            {
-            // Apple устройства (расширенная база)
-            {"001B63", "Apple"}, // iPhone/iPad
-            {"00237D", "Apple"}, // iPhone/iPad
-            {"0026BB", "Apple"}, // iPhone/iPad/iPod
-            {"00A040", "Apple"}, // Mac/AirPort
-            {"C82A14", "Apple"}, // iPhone/iPad
-            {"E0ACCB", "Apple"}, // Mac/AirPort
-            {"3C0754", "Apple"}, // iPhone/iPad
-            {"A4C361", "Apple"}, // iPhone/iPad
-            {"F0DBE2", "Apple"}, // iPhone/iPad
-            {"84F3EB", "Apple"}, // iPhone/iPad
-            {"6C72E7", "Apple"}, // iPhone/iPad
-            {"AC3613", "Apple"}, // iPhone/iPad
-            {"001EC2", "Apple"}, // MacBook/iMac
-            {"70CD60", "Apple"}, // MacBook/iMac
-            {"78CA39", "Apple"}, // MacBook/iMac
-            {"B8F6B1", "Apple"}, // Apple TV/AirPort
-            {"D89695", "Apple"}, // Apple TV
-            {"28E02C", "Apple"}, // Apple TV
-            {"7CF31B", "Apple"}, // Apple TV
-            {"F81EDF", "Apple"}, // Apple TV
-                
-                // Samsung устройства
-                {"001632", "Samsung"},
-                {"002454", "Samsung"},
-                {"5C577E", "Samsung"},
-                {"E84E84", "Samsung"},
-                {"30D6C9", "Samsung"},
-                {"C85195", "Samsung"},
-                {"DC71E8", "Samsung"},
-                
-                // Роутеры и сетевое оборудование
-                {"001485", "Netgear"},
-                {"002722", "Netgear"},
-                {"A42BB0", "Netgear"},
-                {"001CF0", "D-Link"},
-                {"0026F2", "D-Link"},
-                {"002191", "Tp-Link"},
-                {"C46E1F", "Tp-Link"},
-                {"F8A2D6", "Tp-Link"},
-                {"001999", "Belkin"},
-                {"944452", "Belkin"},
-                {"EC1A59", "Belkin"},
-                {"00146C", "Linksys"},
-                {"68F728", "Linksys"},
-                
-                // Компьютеры и ноутбуки
-                {"00904D", "Dell"},
-                {"001E8C", "Dell"},
-                {"002219", "Dell"},
-                {"B8CA3A", "Dell"},
-                {"001A4B", "HP"},
-                {"70106F", "HP"},
-                {"009027", "HP"},
-                {"00E020", "Intel"},
-                {"001B21", "Intel"},
-                {"E4B97A", "Intel"},
-                {"001E4F", "Lenovo"},
-                {"005CF6", "Lenovo"},
-                {"689423", "Lenovo"},
-                {"00E04D", "Broadcom"},
-                {"001560", "ASUS"},
-                {"2C56DC", "ASUS"},
-                {"F46D04", "ASUS"},
-                
-                // IoT и умные устройства
-                {"ECF4BB", "Amazon"},
-                {"F0272D", "Amazon"},
-                {"18B430", "Nest"},
-                {"9CFEFB", "Sonos"},
-                {"000E58", "Sonos"},
-                {"54FA3E", "Ring"},
-                {"002618", "Philips"},
-                {"001788", "Philips"},
-                
-                // Игровые консоли
-                {"002248", "Nintendo"},
-                {"009BF3", "Nintendo"},
-                {"0403D6", "Nintendo"},
-                {"001E3D", "Microsoft"},
-                {"001DD8", "Microsoft"},
-                {"08002E", "Microsoft"},
-                {"002090", "Sony"},
-                {"001C9E", "Sony"},
-                {"001E56", "Sony"},
-                
-                // Принтеры
-                {"001E0B", "Canon"},
-                {"002507", "Canon"},
-                {"003018", "Epson"},
-                {"001279", "Brother"},
-                
-                // Камеры и видеонаблюдение
-                {"0007AB", "Axis"},
-                {"001B2F", "Hikvision"},
-                {"4C9EFF", "Ubiquiti"},
-                
-                // Виртуализация
-                {"005056", "VMware"},
-                {"000C29", "VMware"},
-                {"001C14", "VMware"},
-                {"525400", "QEMU"},
-                {"080027", "VirtualBox"},
-                
-                // Мобильные операторы и модемы
-                {"001F5B", "Huawei"},
-                {"002E1E", "ZTE"},
-                {"000474", "Qualcomm"},
-                
-                // Generic
-                {"000000", "Generic"},
-                {"001122", "Unknown Device"}
-            };
-        }
-
-        private string DetermineDeviceType(NetworkDevice device)
-        {
-            var hostname = device.Hostname?.ToLower() ?? "";
-            var vendor = device.Vendor?.ToLower() ?? "";
-            var mac = device.MACAddress?.Replace(":", "").Replace("-", "").ToUpper() ?? "";
-
-            // Определяем по производителю Apple с улучшенной логикой
-            if (vendor.Contains("apple"))
-            {
-                // Проверяем по hostname
-                if (hostname.Contains("iphone") || hostname.Contains("phone"))
-                    return "📱 iPhone";
-                if (hostname.Contains("ipad") || hostname.Contains("pad"))
-                    return "📱 iPad";
-                if (hostname.Contains("macbook") || hostname.Contains("imac") || hostname.Contains("mac"))
-                    return "💻 Mac компьютер";
-                if (hostname.Contains("appletv") || hostname.Contains("apple-tv"))
-                    return "📺 Apple TV";
-                if (hostname.Contains("watch"))
-                    return "⌚ Apple Watch";
-                if (hostname.Contains("airpods") || hostname.Contains("beats"))
-                    return "🎧 Apple аудио";
-
-                // Дополнительная проверка по MAC адресу для определения типа Apple устройства
-                if (IsAppleMobileDevice(mac))
-                {
-                    // Если не смогли определить точно - пробуем по другим признакам
-                    var ports = device.OpenPorts ?? new List<int>();
-
-                    // iPad обычно имеет больше портов чем iPhone
-                    if (ports.Count >= 3 || ports.Contains(5353)) // Bonjour обычно есть на iPad
-                        return "📱 iPad";
-                    else if (ports.Count <= 2)
-                        return "📱 iPhone";
-                }
-
-                // Если это стационарное Apple устройство
-                if (IsAppleDesktopMAC(mac))
-                    return "💻 Mac компьютер";
-
-                return "🍎 Apple устройство";
-            }
-
-            // Samsung с улучшенной логикой
-            if (vendor.Contains("samsung"))
-            {
-                if (hostname.Contains("galaxy") && (hostname.Contains("tab") || hostname.Contains("note")))
-                    return "📱 Samsung планшет";
-                if (hostname.Contains("galaxy") || hostname.Contains("sm-") || hostname.Contains("phone"))
-                    return "📱 Samsung телефон";
-                if (hostname.Contains("tv") || hostname.Contains("smart"))
-                    return "📺 Samsung Smart TV";
-                return "📱 Samsung устройство";
-            }
-
-            // Игровые консоли
-            if (vendor.Contains("nintendo"))
-            {
-                if (hostname.Contains("switch")) return "🎮 Nintendo Switch";
-                return "🎮 Nintendo консоль";
-            }
-
-            if (vendor.Contains("sony"))
-            {
-                if (hostname.Contains("playstation") || hostname.Contains("ps")) return "🎮 PlayStation";
-                if (hostname.Contains("tv")) return "📺 Sony TV";
-                return "📺 Sony устройство";
-            }
-
-            if (vendor.Contains("microsoft"))
-            {
-                if (hostname.Contains("xbox")) return "🎮 Xbox";
-                if (hostname.Contains("surface")) return "💻 Surface планшет";
-                return "💻 Microsoft устройство";
-            }
-
-            // Определяем по имени хоста (улучшенная логика)
-            if (hostname.Contains("router") || hostname.Contains("gateway") || hostname.Contains("openwrt"))
-                return "🌐 Роутер";
-
-            if (hostname.Contains("printer") || hostname.Contains("canon") ||
-                hostname.Contains("epson") || hostname.Contains("hp-") || vendor.Contains("canon"))
-                return "🖨️ Принтер";
-
-            if (hostname.Contains("camera") || hostname.Contains("cam") || hostname.Contains("nvr") || vendor.Contains("axis"))
-                return "📹 IP камера";
-
-            if (hostname.Contains("tv") || hostname.Contains("smart") || hostname.Contains("roku") || hostname.Contains("chromecast"))
-                return "📺 Smart TV";
-
-            if (hostname.Contains("android") || hostname.Contains("phone") || hostname.Contains("mobile"))
-                return "📱 Android телефон";
-
-            if (hostname.Contains("tablet") || hostname.Contains("tab-"))
-                return "📱 Планшет";
-
-            // Определяем по производителю сетевого оборудования
-            if (vendor.Contains("netgear") || vendor.Contains("d-link") ||
-                vendor.Contains("tp-link") || vendor.Contains("linksys") || vendor.Contains("belkin"))
-                return "🌐 Сетевое оборудование";
-
-            if (vendor.Contains("sonos"))
-                return "🔊 Sonos колонка";
-
-            if (vendor.Contains("nest") || vendor.Contains("google"))
-                return "🏠 Google/Nest устройство";
-
-            if (vendor.Contains("ring"))
-                return "🔔 Ring устройство";
-
-            if (vendor.Contains("philips"))
-                return "💡 Philips умные устройства";
-
-            if (vendor.Contains("amazon"))
-                return "🗣️ Amazon Echo/Alexa";
-
-            if (vendor.Contains("vmware") || vendor.Contains("qemu") || vendor.Contains("virtualbox"))
-                return "🖥️ Виртуальная машина";
-
-            if (vendor.Contains("dell") || vendor.Contains("hp") || vendor.Contains("lenovo") ||
-                vendor.Contains("asus") || vendor.Contains("intel"))
-                return "💻 Компьютер";
-
-            if (vendor.Contains("huawei") || vendor.Contains("zte") || vendor.Contains("qualcomm"))
-                return "📡 Модем/Роутер";
-
-            // Расширенная проверка по открытым портам
-            var openPorts = device.OpenPorts ?? new List<int>();
-            if (openPorts.Contains(80) || openPorts.Contains(443))
-            {
-                if (openPorts.Contains(22) || openPorts.Contains(23))
-                    return "🌐 Сетевое устройство";
-                return "🌐 Web-сервер";
-            }
-
-            if (openPorts.Contains(3389))
-                return "💻 Windows компьютер";
-
-            if (openPorts.Contains(22))
-                return "🐧 Linux/Unix сервер";
-
-            if (openPorts.Contains(5353)) // Bonjour/mDNS
-                return "📱 Мобильное устройство";
-
-            // По умолчанию
-            return "❓ Неизвестное устройство";
-        }
-
-        // Проверяем является ли MAC адрес мобильным Apple устройством
-        private bool IsAppleMobileDevice(string mac)
-        {
-            if (string.IsNullOrEmpty(mac) || mac.Length < 6) return false;
-
-            var prefix = mac.Substring(0, 6);
-            // MAC префиксы для мобильных Apple устройств
-            var mobileApplePrefixes = new[]
-            {
-                "001B63", "00237D", "0026BB", "A4C361", "F0DBE2",
-                "84F3EB", "6C72E7", "AC3613", "3C0754", "C82A14"
+                {"0", "Системная загрузка"},
+                {"2", "Интерактивный (консоль)"},
+                {"3", "Сетевой (SMB, HTTP)"},
+                {"4", "Пакетная обработка"},
+                {"5", "Служба"},
+                {"7", "Разблокировка"},
+                {"8", "NetworkCleartext"},
+                {"9", "NewCredentials"},
+                {"10", "🎯 RDP/Terminal Services"},
+                {"11", "CachedInteractive"},
+                {"%%2313", "Неизвестный тип"}
             };
 
-            return mobileApplePrefixes.Contains(prefix);
+            return explanations.ContainsKey(logonType) ? explanations[logonType] : "Неизвестный";
         }
-
-        // Проверяем является ли MAC адрес настольным Apple устройством
-        private bool IsAppleDesktopMAC(string mac)
-        {
-            if (string.IsNullOrEmpty(mac) || mac.Length < 6) return false;
-
-            var prefix = mac.Substring(0, 6);
-            // MAC префиксы для настольных Apple устройств
-            var desktopApplePrefixes = new[]
-            {
-                "00A040", "E0ACCB", "001EC2", "70CD60", "78CA39"
-            };
-
-            return desktopApplePrefixes.Contains(prefix);
-        }
-
-        private string DetectOperatingSystem(NetworkDevice device)
-        {
-            var hostname = device.Hostname?.ToLower() ?? "";
-            var vendor = device.Vendor?.ToLower() ?? "";
-            var deviceType = device.DeviceType?.ToLower() ?? "";
-
-            if (vendor.Contains("apple"))
-            {
-                if (deviceType.Contains("iphone")) return "iOS (iPhone)";
-                if (deviceType.Contains("ipad")) return "iPadOS";
-                if (deviceType.Contains("mac") || hostname.Contains("mac")) return "macOS";
-                if (deviceType.Contains("apple tv")) return "tvOS";
-                if (deviceType.Contains("watch")) return "watchOS";
-                return "Apple OS";
-            }
-
-            if (vendor.Contains("microsoft") || hostname.Contains("desktop") || hostname.Contains("pc"))
-                return "Windows";
-
-            if (vendor.Contains("samsung") || hostname.Contains("android") || deviceType.Contains("android"))
-                return "Android";
-
-            if (hostname.Contains("linux") || hostname.Contains("ubuntu") || hostname.Contains("debian"))
-                return "Linux";
-
-            if (vendor.Contains("vmware"))
-                return "ESXi/VM";
-
-            // Определяем по портам
-            var ports = device.OpenPorts ?? new List<int>();
-            if (ports.Contains(3389)) // RDP
-                return "Windows";
-            if (ports.Contains(22) && !ports.Contains(80)) // SSH без web
-                return "Linux/Unix";
-            if (ports.Contains(5353)) // Bonjour
-                return "macOS/iOS";
-
-            return "Неизвестно";
-        }
-
-        private List<int> ScanCommonPorts(string ipAddress)
-        {
-            var openPorts = new List<int>();
-            var commonPorts = new[] { 21, 22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 3389, 5900, 8080 };
-
-            foreach (var port in commonPorts)
-            {
-                try
-                {
-                    using (var tcpClient = new System.Net.Sockets.TcpClient())
-                    {
-                        var result = tcpClient.BeginConnect(ipAddress, port, null, null);
-                        var success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromMilliseconds(100));
-
-                        if (success && tcpClient.Connected)
-                        {
-                            openPorts.Add(port);
-                        }
-
-                        tcpClient.Close();
-                    }
-                }
-                catch
-                {
-                    // Игнорируем ошибки подключения
-                }
-            }
-
-            return openPorts;
-        }
-
-        private string GenerateDeviceDescription(NetworkDevice device)
-        {
-            var parts = new List<string>();
-
-            if (!string.IsNullOrEmpty(device.DeviceType))
-                parts.Add(device.DeviceType);
-
-            if (!string.IsNullOrEmpty(device.OperatingSystem) && device.OperatingSystem != "Неизвестно")
-                parts.Add($"ОС: {device.OperatingSystem}");
-
-            if (device.OpenPorts.Any())
-                parts.Add($"Порты: {string.Join(", ", device.OpenPorts)}");
-
-            return string.Join(" | ", parts);
-        }
-
-        public bool IsRunning => _isRunning;
     }
 }
