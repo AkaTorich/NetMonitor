@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
+using System.ComponentModel; // Для ListSortDirection
 using System.Diagnostics; // Добавляем для EventLog
 using System.Diagnostics.Eventing.Reader;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net; // Для работы с IP адресами
 using System.Text.RegularExpressions; // Добавляем для Regex
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -16,8 +17,8 @@ namespace RDPLoginMonitor
     {
         private RDPMonitor _monitor;
         private NetworkMonitor _networkMonitor;
-        private BindingList<RDPFailedLogin> _loginAttempts;
-        private BindingList<NetworkDevice> _networkDevices;
+        private SortableBindingList<RDPFailedLogin> _loginAttempts;
+        private SortableBindingList<NetworkDevice> _networkDevices;
         private System.Windows.Forms.Timer _statsTimer;         // Указываем точный тип
         private System.Windows.Forms.Timer _networkTimer;       // Указываем точный тип
         private System.Windows.Forms.Timer _autoScanTimer;      // Указываем точный тип
@@ -39,8 +40,9 @@ namespace RDPLoginMonitor
 
         private void InitializeMonitors()
         {
-            _loginAttempts = new BindingList<RDPFailedLogin>();
-            _networkDevices = new BindingList<NetworkDevice>();
+            // ИЗМЕНЕНО: используем SortableBindingList для поддержки сортировки
+            _loginAttempts = new SortableBindingList<RDPFailedLogin>();
+            _networkDevices = new SortableBindingList<NetworkDevice>();
 
             logGrid.DataSource = _loginAttempts;
             networkGrid.DataSource = _networkDevices;
@@ -151,6 +153,276 @@ namespace RDPLoginMonitor
             statisticsView.Columns.Add("Статус", 120);
         }
 
+        // НОВЫЕ МЕТОДЫ ДЛЯ СОРТИРОВКИ
+
+        private void ConfigureDataGridViewSorting()
+        {
+            // Настройка сортировки для logGrid (RDP события)
+            ConfigureLogGridSorting();
+
+            // Настройка сортировки для networkGrid (сетевые устройства)
+            ConfigureNetworkGridSorting();
+        }
+
+        private void ConfigureLogGridSorting()
+        {
+            try
+            {
+                // Проверяем что колонки созданы
+                if (logGrid.Columns.Count == 0)
+                {
+                    AddLogMessage("⚠️ RDP логи: колонки еще не созданы, пропускаем настройку", LogLevel.Warning);
+                    return;
+                }
+
+                AddLogMessage($"🔧 Настраиваем сортировку для {logGrid.Columns.Count} колонок RDP логов", LogLevel.Debug);
+
+                // Включаем сортировку для всех колонок
+                foreach (DataGridViewColumn column in logGrid.Columns)
+                {
+                    column.SortMode = DataGridViewColumnSortMode.Automatic;
+                    AddLogMessage($"   ✓ Колонка '{column.Name}' - сортировка включена", LogLevel.Debug);
+                }
+
+                // УБИРАЕМ ручную сортировку - теперь SortableBindingList сам управляет сортировкой
+
+                // Обработчик событий сортировки для пользовательской логики
+                logGrid.ColumnHeaderMouseClick += LogGrid_ColumnHeaderMouseClick;
+
+                AddLogMessage("✅ Сортировка RDP логов настроена успешно", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка настройки сортировки RDP логов: {ex.Message}", LogLevel.Error);
+            }
+        }
+        private void ConfigureNetworkGridSorting()
+        {
+            try
+            {
+                // Проверяем что колонки созданы
+                if (networkGrid.Columns.Count == 0)
+                {
+                    AddLogMessage("⚠️ Сетевые устройства: колонки еще не созданы, пропускаем настройку", LogLevel.Warning);
+                    return;
+                }
+
+                AddLogMessage($"🔧 Настраиваем сортировку для {networkGrid.Columns.Count} колонок сетевых устройств", LogLevel.Debug);
+
+                // Включаем сортировку для всех колонок
+                foreach (DataGridViewColumn column in networkGrid.Columns)
+                {
+                    column.SortMode = DataGridViewColumnSortMode.Automatic;
+                    AddLogMessage($"   ✓ Колонка '{column.Name}' - сортировка включена", LogLevel.Debug);
+                }
+
+                // Обработчик событий сортировки для пользовательской логики
+                networkGrid.ColumnHeaderMouseClick += NetworkGrid_ColumnHeaderMouseClick;
+
+                AddLogMessage("✅ Сортировка сетевых устройств настроена успешно", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка настройки сетевых устройств: {ex.Message}", LogLevel.Error);
+            }
+        }        // 5. УПРОЩЕННЫЕ обработчики кликов (убираем специальную обработку IP)
+        private void LogGrid_ColumnHeaderMouseClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            try
+            {
+                var column = logGrid.Columns[e.ColumnIndex];
+                var columnName = column.HeaderText;
+
+                // Показываем информацию о сортировке (опционально)
+                if (!_silentMode)
+                {
+                    var direction = column.HeaderCell.SortGlyphDirection == SortOrder.Ascending ? "по возрастанию" : "по убыванию";
+                    AddLogMessage($"📊 Сортировка RDP логов по колонке '{columnName}' {direction}", LogLevel.Debug);
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка сортировки RDP логов: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        // Обработчик клика по заголовку колонки в сетевых устройствах
+        private void NetworkGrid_ColumnHeaderMouseClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            try
+            {
+                var column = networkGrid.Columns[e.ColumnIndex];
+                var columnName = column.HeaderText;
+
+                // Показываем информацию о сортировке (опционально)
+                if (!_silentMode)
+                {
+                    var direction = column.HeaderCell.SortGlyphDirection == SortOrder.Ascending ? "по возрастанию" : "по убыванию";
+                    AddLogMessage($"🌐 Сортировка устройств по колонке '{columnName}' {direction}", LogLevel.Debug);
+                }
+
+                // Примечание: Специальная обработка IP теперь встроена в SortableBindingList
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка сортировки сетевых устройств: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        // Метод для установки пользовательских заголовков колонок с иконками
+        private void SetupColumnHeaders()
+        {
+            try
+            {
+                AddLogMessage("🎨 Настройка заголовков колонок с иконками...", LogLevel.Debug);
+
+                // Настройка заголовков для RDP логов
+                if (logGrid.Columns.Count > 0)
+                {
+                    AddLogMessage($"📋 Обновляем заголовки для {logGrid.Columns.Count} колонок RDP логов", LogLevel.Debug);
+
+                    // Предполагаемые колонки (адаптируй под свои названия)
+                    var columnMappings = new Dictionary<string, string>
+            {
+                {"TimeStamp", "🕐 Время"},
+                {"Username", "👤 Пользователь"},
+                {"SourceIP", "🌐 IP адрес"},
+                {"Computer", "💻 Компьютер"},
+                {"EventType", "📋 Тип события"},
+                {"Status", "📊 Статус"},
+                {"Description", "📝 Описание"},
+                {"EventId", "🔢 ID события"},
+                {"LogonType", "🔑 Тип входа"}
+            };
+
+                    foreach (DataGridViewColumn column in logGrid.Columns)
+                    {
+                        var oldHeader = column.HeaderText;
+                        if (columnMappings.ContainsKey(column.Name))
+                        {
+                            column.HeaderText = columnMappings[column.Name];
+                            AddLogMessage($"   ✓ '{oldHeader}' → '{column.HeaderText}'", LogLevel.Debug);
+                        }
+                        else
+                        {
+                            // Если точное имя не найдено, пробуем частичное совпадение
+                            var mapping = columnMappings.FirstOrDefault(m => column.Name.Contains(m.Key) || m.Key.Contains(column.Name));
+                            if (!mapping.Equals(default(KeyValuePair<string, string>)))
+                            {
+                                column.HeaderText = mapping.Value;
+                                AddLogMessage($"   ✓ '{oldHeader}' → '{column.HeaderText}' (частичное совпадение)", LogLevel.Debug);
+                            }
+                        }
+                    }
+                }
+
+                // Настройка заголовков для сетевых устройств
+                if (networkGrid.Columns.Count > 0)
+                {
+                    AddLogMessage($"🌐 Обновляем заголовки для {networkGrid.Columns.Count} колонок сетевых устройств", LogLevel.Debug);
+
+                    var networkColumnMappings = new Dictionary<string, string>
+            {
+                {"IPAddress", "🌐 IP адрес"},
+                {"MACAddress", "🏷️ MAC адрес"},
+                {"Hostname", "💻 Имя хоста"},
+                {"Vendor", "🏭 Производитель"},
+                {"DeviceType", "📱 Тип устройства"},
+                {"Status", "📊 Статус"},
+                {"FirstSeen", "👁️ Первое обнаружение"},
+                {"LastSeen", "⏰ Последняя активность"},
+                {"OpenPorts", "🔌 Открытые порты"},
+                {"OperatingSystem", "🖥️ ОС"}
+            };
+
+                    foreach (DataGridViewColumn column in networkGrid.Columns)
+                    {
+                        var oldHeader = column.HeaderText;
+                        if (networkColumnMappings.ContainsKey(column.Name))
+                        {
+                            column.HeaderText = networkColumnMappings[column.Name];
+                            AddLogMessage($"   ✓ '{oldHeader}' → '{column.HeaderText}'", LogLevel.Debug);
+                        }
+                        else
+                        {
+                            // Если точное имя не найдено, пробуем частичное совпадение
+                            var mapping = networkColumnMappings.FirstOrDefault(m => column.Name.Contains(m.Key) || m.Key.Contains(column.Name));
+                            if (!mapping.Equals(default(KeyValuePair<string, string>)))
+                            {
+                                column.HeaderText = mapping.Value;
+                                AddLogMessage($"   ✓ '{oldHeader}' → '{column.HeaderText}' (частичное совпадение)", LogLevel.Debug);
+                            }
+                        }
+                    }
+                }
+
+                AddLogMessage("✅ Заголовки колонок настроены с иконками", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка настройки заголовков: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        // Метод для добавления контекстного меню с опциями сортировки
+        private void AddSortingContextMenu()
+        {
+            try
+            {
+                // Контекстное меню для RDP логов - УПРОЩЕННОЕ
+                var logContextMenu = new ContextMenuStrip();
+                logContextMenu.Items.Add("📊 Сортировать по времени", null, (s, e) =>
+                {
+                    var timeColumn = logGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("Time") || c.HeaderText.Contains("Время"));
+                    if (timeColumn != null) logGrid.Sort(timeColumn, ListSortDirection.Descending);
+                });
+                logContextMenu.Items.Add("👤 Сортировать по пользователю", null, (s, e) =>
+                {
+                    var userColumn = logGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("User") || c.HeaderText.Contains("Пользователь"));
+                    if (userColumn != null) logGrid.Sort(userColumn, ListSortDirection.Ascending);
+                });
+                logContextMenu.Items.Add("🌐 Сортировать по IP", null, (s, e) =>
+                {
+                    var ipColumn = logGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("IP") || c.HeaderText.Contains("IP"));
+                    if (ipColumn != null) logGrid.Sort(ipColumn, ListSortDirection.Ascending);
+                });
+
+                logGrid.ContextMenuStrip = logContextMenu;
+
+                // Контекстное меню для сетевых устройств - УПРОЩЕННОЕ
+                var networkContextMenu = new ContextMenuStrip();
+                networkContextMenu.Items.Add("🌐 Сортировать по IP", null, (s, e) =>
+                {
+                    var ipColumn = networkGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("IP") || c.HeaderText.Contains("IP"));
+                    if (ipColumn != null) networkGrid.Sort(ipColumn, ListSortDirection.Ascending);
+                });
+                networkContextMenu.Items.Add("🏭 Сортировать по производителю", null, (s, e) =>
+                {
+                    var vendorColumn = networkGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("Vendor") || c.HeaderText.Contains("Производитель"));
+                    if (vendorColumn != null) networkGrid.Sort(vendorColumn, ListSortDirection.Ascending);
+                });
+                networkContextMenu.Items.Add("⏰ Сортировать по активности", null, (s, e) =>
+                {
+                    var lastSeenColumn = networkGrid.Columns.Cast<DataGridViewColumn>()
+                        .FirstOrDefault(c => c.Name.Contains("LastSeen") || c.HeaderText.Contains("активность"));
+                    if (lastSeenColumn != null) networkGrid.Sort(lastSeenColumn, ListSortDirection.Descending);
+                });
+
+                networkGrid.ContextMenuStrip = networkContextMenu;
+
+                AddLogMessage("✅ Контекстные меню сортировки добавлены", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка создания контекстных меню: {ex.Message}", LogLevel.Error);
+            }
+        }
+
         private void MainForm_Load(object sender, EventArgs e)
         {
             // Подключаем события после полной загрузки формы
@@ -166,8 +438,43 @@ namespace RDPLoginMonitor
 
             // УЛУЧШЕННАЯ проверка прав администратора при запуске
             CheckAdminRightsAndOfferRestart();
-        }
 
+            // НОВОЕ: Настройка сортировки ПОСЛЕ полной загрузки формы
+            // Используем Timer чтобы настроить сортировку после того как все колонки созданы
+            var sortingSetupTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            sortingSetupTimer.Tick += (s, args) =>
+            {
+                sortingSetupTimer.Stop();
+                sortingSetupTimer.Dispose();
+
+                // Теперь настраиваем сортировку когда колонки точно созданы
+                SetupDataGridSortingDelayed();
+            };
+            sortingSetupTimer.Start();
+        }
+        // НОВЫЙ МЕТОД: Отложенная настройка сортировки
+        private void SetupDataGridSortingDelayed()
+        {
+            try
+            {
+                AddLogMessage("🔧 Настройка сортировки таблиц...", LogLevel.Debug);
+
+                // Настройка сортировки для DataGridView
+                ConfigureDataGridViewSorting();
+
+                // Настройка заголовков колонок с иконками
+                SetupColumnHeaders();
+
+                // Добавление контекстных меню с опциями сортировки
+                AddSortingContextMenu();
+
+                AddLogMessage("✅ Сортировка настроена успешно", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLogMessage($"❌ Ошибка настройки сортировки: {ex.Message}", LogLevel.Error);
+            }
+        }
         /// <summary>
         /// Проверяет права администратора и предлагает перезапуск если нужно
         /// </summary>
@@ -272,7 +579,7 @@ namespace RDPLoginMonitor
             testRDPButton.BackColor = Color.LightGray;
 
             // Обновляем только подсказку внизу
-            testInfoLabel.Text = "💡 Без прав админа доступны: сканирование сети, диагностика MAC базы. Для RDP мониторинга перезапусти как администратор.";
+            testInfoLabel.Text = "💡 Без прав админа доступны: сканирование сети, диагностика MAC базы. Для RDP мониторинга перезапусти как администратор. Кликай по заголовкам для сортировки!";
             testInfoLabel.ForeColor = Color.DarkBlue;
         }
 
@@ -1221,14 +1528,14 @@ namespace RDPLoginMonitor
 
         private void AddLoginAttempt(RDPFailedLogin login)
         {
-            _loginAttempts.Insert(0, login);
+            // ИЗМЕНЕНО: используем метод Insert из SortableBindingList
+            (_loginAttempts as SortableBindingList<RDPFailedLogin>)?.Insert(login);
 
             // Ограничиваем количество записей
             while (_loginAttempts.Count > 1000)
             {
                 _loginAttempts.RemoveAt(_loginAttempts.Count - 1);
             }
-
             // Подсветка строк в зависимости от типа события
             if (logGrid.Rows.Count > 0)
             {
@@ -1309,7 +1616,7 @@ namespace RDPLoginMonitor
 
         private void HandleNewDevice(NetworkDevice device)
         {
-            _networkDevices.Insert(0, device);
+            (_networkDevices as SortableBindingList<NetworkDevice>)?.Insert(device);
 
             // Определяем уровень важности устройства
             var deviceIcon = GetDeviceIcon(device.DeviceType);

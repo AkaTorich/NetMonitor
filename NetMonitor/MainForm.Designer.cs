@@ -414,7 +414,7 @@ namespace RDPLoginMonitor
             this.testInfoLabel.Name = "testInfoLabel";
             this.testInfoLabel.Size = new System.Drawing.Size(1000, 25);
             this.testInfoLabel.TabIndex = 17;
-            this.testInfoLabel.Text = "💡 Совет: Для проверки RDP используй кнопку 'RDP Тест'. В тихом режиме меньше сообщений, в подробном - все события.";
+            this.testInfoLabel.Text = "💡 Совет: Для проверки RDP используй кнопку 'RDP Тест'. В тихом режиме меньше сообщений, в подробном - все события. Кликай по заголовкам колонок для сортировки!";
             // 
             // statsPanel
             // 
@@ -524,6 +524,10 @@ namespace RDPLoginMonitor
             this.logGrid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
             this.logGrid.Size = new System.Drawing.Size(1307, 556);
             this.logGrid.TabIndex = 0;
+            // Включаем возможность сортировки
+            this.logGrid.AllowUserToOrderColumns = true;
+            this.logGrid.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.EnableResizing;
+            this.logGrid.EnableHeadersVisualStyles = false;
             // 
             // textLogTab
             // 
@@ -575,6 +579,9 @@ namespace RDPLoginMonitor
             this.statisticsView.TabIndex = 0;
             this.statisticsView.UseCompatibleStateImageBehavior = false;
             this.statisticsView.View = System.Windows.Forms.View.Details;
+            // Включаем сортировку для ListView
+            this.statisticsView.Sorting = System.Windows.Forms.SortOrder.None;
+            this.statisticsView.ListViewItemSorter = null;
             // 
             // networkTab
             // 
@@ -617,6 +624,10 @@ namespace RDPLoginMonitor
             this.networkGrid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
             this.networkGrid.Size = new System.Drawing.Size(1276, 556);
             this.networkGrid.TabIndex = 0;
+            // Включаем возможность сортировки
+            this.networkGrid.AllowUserToOrderColumns = true;
+            this.networkGrid.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.EnableResizing;
+            this.networkGrid.EnableHeadersVisualStyles = false;
             // 
             // MainForm
             // 
@@ -630,7 +641,7 @@ namespace RDPLoginMonitor
             this.MinimumSize = new System.Drawing.Size(1300, 650);
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "RDP & Network Security Monitor v2.1 - Dark Theme";
+            this.Text = "RDP & Network Security Monitor v2.1 - Dark Theme with Sorting";
             this.controlPanel.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)(this.maxAttemptsNum)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.timeWindowNum)).EndInit();
