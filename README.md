@@ -58,12 +58,6 @@
 #### Главное окно
 ![Главное окно](screenshots/main_window.png)
 
-#### Сетевые устройства
-![Сетевые устройства](screenshots/network_devices.png)
-
-#### RDP события
-![RDP события](screenshots/rdp_events.png)
-
 </details>
 
 ### Основные вкладки
