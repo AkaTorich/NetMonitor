@@ -61,6 +61,8 @@ namespace RDPLoginMonitor
         {
             System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
             System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle3 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
             this.controlPanel = new System.Windows.Forms.Panel();
             this.startButton = new System.Windows.Forms.Button();
@@ -112,7 +114,7 @@ namespace RDPLoginMonitor
             // 
             // controlPanel
             // 
-            this.controlPanel.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(240)))), ((int)(((byte)(240)))), ((int)(((byte)(240)))));
+            this.controlPanel.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(30)))), ((int)(((byte)(30)))));
             this.controlPanel.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
             this.controlPanel.Controls.Add(this.startButton);
             this.controlPanel.Controls.Add(this.stopButton);
@@ -141,9 +143,11 @@ namespace RDPLoginMonitor
             // 
             // startButton
             // 
-            this.startButton.BackColor = System.Drawing.Color.LightGreen;
+            this.startButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(120)))), ((int)(((byte)(0)))));
+            this.startButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(150)))), ((int)(((byte)(0)))));
             this.startButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.startButton.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold);
+            this.startButton.ForeColor = System.Drawing.Color.White;
             this.startButton.Location = new System.Drawing.Point(10, 10);
             this.startButton.Name = "startButton";
             this.startButton.Size = new System.Drawing.Size(100, 35);
@@ -154,10 +158,12 @@ namespace RDPLoginMonitor
             // 
             // stopButton
             // 
-            this.stopButton.BackColor = System.Drawing.Color.LightCoral;
+            this.stopButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(120)))), ((int)(((byte)(0)))), ((int)(((byte)(0)))));
             this.stopButton.Enabled = false;
+            this.stopButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(150)))), ((int)(((byte)(0)))), ((int)(((byte)(0)))));
             this.stopButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.stopButton.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold);
+            this.stopButton.ForeColor = System.Drawing.Color.White;
             this.stopButton.Location = new System.Drawing.Point(120, 10);
             this.stopButton.Name = "stopButton";
             this.stopButton.Size = new System.Drawing.Size(100, 35);
@@ -168,9 +174,11 @@ namespace RDPLoginMonitor
             // 
             // clearButton
             // 
-            this.clearButton.BackColor = System.Drawing.Color.LightBlue;
+            this.clearButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(80)))), ((int)(((byte)(120)))));
+            this.clearButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(100)))), ((int)(((byte)(150)))));
             this.clearButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.clearButton.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.clearButton.ForeColor = System.Drawing.Color.White;
             this.clearButton.Location = new System.Drawing.Point(230, 10);
             this.clearButton.Name = "clearButton";
             this.clearButton.Size = new System.Drawing.Size(100, 35);
@@ -181,9 +189,11 @@ namespace RDPLoginMonitor
             // 
             // saveButton
             // 
-            this.saveButton.BackColor = System.Drawing.Color.LightYellow;
+            this.saveButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(120)))), ((int)(((byte)(100)))), ((int)(((byte)(0)))));
+            this.saveButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(150)))), ((int)(((byte)(130)))), ((int)(((byte)(0)))));
             this.saveButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.saveButton.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.saveButton.ForeColor = System.Drawing.Color.White;
             this.saveButton.Location = new System.Drawing.Point(340, 10);
             this.saveButton.Name = "saveButton";
             this.saveButton.Size = new System.Drawing.Size(100, 35);
@@ -194,9 +204,11 @@ namespace RDPLoginMonitor
             // 
             // scanNetworkButton
             // 
-            this.scanNetworkButton.BackColor = System.Drawing.Color.LightSteelBlue;
+            this.scanNetworkButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(60)))), ((int)(((byte)(90)))));
+            this.scanNetworkButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(80)))), ((int)(((byte)(80)))), ((int)(((byte)(120)))));
             this.scanNetworkButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.scanNetworkButton.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.scanNetworkButton.ForeColor = System.Drawing.Color.White;
             this.scanNetworkButton.Location = new System.Drawing.Point(450, 10);
             this.scanNetworkButton.Name = "scanNetworkButton";
             this.scanNetworkButton.Size = new System.Drawing.Size(130, 35);
@@ -207,9 +219,11 @@ namespace RDPLoginMonitor
             // 
             // diagnosticButton
             // 
-            this.diagnosticButton.BackColor = System.Drawing.Color.Plum;
+            this.diagnosticButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(90)))), ((int)(((byte)(60)))), ((int)(((byte)(90)))));
+            this.diagnosticButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(120)))), ((int)(((byte)(80)))), ((int)(((byte)(120)))));
             this.diagnosticButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.diagnosticButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.diagnosticButton.ForeColor = System.Drawing.Color.White;
             this.diagnosticButton.Location = new System.Drawing.Point(590, 10);
             this.diagnosticButton.Name = "diagnosticButton";
             this.diagnosticButton.Size = new System.Drawing.Size(120, 35);
@@ -220,9 +234,11 @@ namespace RDPLoginMonitor
             // 
             // testRDPButton
             // 
-            this.testRDPButton.BackColor = System.Drawing.Color.LightGreen;
+            this.testRDPButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(90)))), ((int)(((byte)(60)))));
+            this.testRDPButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(120)))), ((int)(((byte)(80)))));
             this.testRDPButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.testRDPButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.testRDPButton.ForeColor = System.Drawing.Color.White;
             this.testRDPButton.Location = new System.Drawing.Point(720, 10);
             this.testRDPButton.Name = "testRDPButton";
             this.testRDPButton.Size = new System.Drawing.Size(90, 35);
@@ -234,6 +250,7 @@ namespace RDPLoginMonitor
             // maxAttemptsLabel
             // 
             this.maxAttemptsLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.maxAttemptsLabel.ForeColor = System.Drawing.Color.White;
             this.maxAttemptsLabel.Location = new System.Drawing.Point(10, 55);
             this.maxAttemptsLabel.Name = "maxAttemptsLabel";
             this.maxAttemptsLabel.Size = new System.Drawing.Size(90, 20);
@@ -242,6 +259,9 @@ namespace RDPLoginMonitor
             // 
             // maxAttemptsNum
             // 
+            this.maxAttemptsNum.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(50)))), ((int)(((byte)(50)))), ((int)(((byte)(50)))));
+            this.maxAttemptsNum.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
+            this.maxAttemptsNum.ForeColor = System.Drawing.Color.White;
             this.maxAttemptsNum.Location = new System.Drawing.Point(105, 53);
             this.maxAttemptsNum.Minimum = new decimal(new int[] {
             1,
@@ -260,6 +280,7 @@ namespace RDPLoginMonitor
             // timeWindowLabel
             // 
             this.timeWindowLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.timeWindowLabel.ForeColor = System.Drawing.Color.White;
             this.timeWindowLabel.Location = new System.Drawing.Point(175, 55);
             this.timeWindowLabel.Name = "timeWindowLabel";
             this.timeWindowLabel.Size = new System.Drawing.Size(70, 20);
@@ -268,6 +289,9 @@ namespace RDPLoginMonitor
             // 
             // timeWindowNum
             // 
+            this.timeWindowNum.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(50)))), ((int)(((byte)(50)))), ((int)(((byte)(50)))));
+            this.timeWindowNum.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
+            this.timeWindowNum.ForeColor = System.Drawing.Color.White;
             this.timeWindowNum.Location = new System.Drawing.Point(250, 53);
             this.timeWindowNum.Maximum = new decimal(new int[] {
             1440,
@@ -293,6 +317,7 @@ namespace RDPLoginMonitor
             this.networkMonitorCheckBox.Checked = true;
             this.networkMonitorCheckBox.CheckState = System.Windows.Forms.CheckState.Checked;
             this.networkMonitorCheckBox.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.networkMonitorCheckBox.ForeColor = System.Drawing.Color.White;
             this.networkMonitorCheckBox.Location = new System.Drawing.Point(320, 55);
             this.networkMonitorCheckBox.Name = "networkMonitorCheckBox";
             this.networkMonitorCheckBox.Size = new System.Drawing.Size(130, 20);
@@ -304,6 +329,7 @@ namespace RDPLoginMonitor
             this.soundNotificationCheckBox.Checked = true;
             this.soundNotificationCheckBox.CheckState = System.Windows.Forms.CheckState.Checked;
             this.soundNotificationCheckBox.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.soundNotificationCheckBox.ForeColor = System.Drawing.Color.White;
             this.soundNotificationCheckBox.Location = new System.Drawing.Point(460, 55);
             this.soundNotificationCheckBox.Name = "soundNotificationCheckBox";
             this.soundNotificationCheckBox.Size = new System.Drawing.Size(150, 20);
@@ -313,6 +339,7 @@ namespace RDPLoginMonitor
             // autoScanLabel
             // 
             this.autoScanLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.autoScanLabel.ForeColor = System.Drawing.Color.White;
             this.autoScanLabel.Location = new System.Drawing.Point(620, 54);
             this.autoScanLabel.Name = "autoScanLabel";
             this.autoScanLabel.Size = new System.Drawing.Size(140, 20);
@@ -321,6 +348,9 @@ namespace RDPLoginMonitor
             // 
             // autoScanIntervalNum
             // 
+            this.autoScanIntervalNum.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(50)))), ((int)(((byte)(50)))), ((int)(((byte)(50)))));
+            this.autoScanIntervalNum.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
+            this.autoScanIntervalNum.ForeColor = System.Drawing.Color.White;
             this.autoScanIntervalNum.Location = new System.Drawing.Point(765, 53);
             this.autoScanIntervalNum.Maximum = new decimal(new int[] {
             3600,
@@ -344,6 +374,7 @@ namespace RDPLoginMonitor
             // autoScanCheckBox
             // 
             this.autoScanCheckBox.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.autoScanCheckBox.ForeColor = System.Drawing.Color.White;
             this.autoScanCheckBox.Location = new System.Drawing.Point(835, 55);
             this.autoScanCheckBox.Name = "autoScanCheckBox";
             this.autoScanCheckBox.Size = new System.Drawing.Size(195, 20);
@@ -353,7 +384,7 @@ namespace RDPLoginMonitor
             // statusLabel
             // 
             this.statusLabel.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold);
-            this.statusLabel.ForeColor = System.Drawing.Color.Blue;
+            this.statusLabel.ForeColor = System.Drawing.Color.LightBlue;
             this.statusLabel.Location = new System.Drawing.Point(946, 15);
             this.statusLabel.Name = "statusLabel";
             this.statusLabel.Size = new System.Drawing.Size(350, 30);
@@ -362,9 +393,11 @@ namespace RDPLoginMonitor
             // 
             // diagNetworkButton
             // 
-            this.diagNetworkButton.BackColor = System.Drawing.Color.LightCyan;
+            this.diagNetworkButton.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(90)))), ((int)(((byte)(90)))));
+            this.diagNetworkButton.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(((int)(((byte)(0)))), ((int)(((byte)(120)))), ((int)(((byte)(120)))));
             this.diagNetworkButton.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.diagNetworkButton.Font = new System.Drawing.Font("Segoe UI", 8F, System.Drawing.FontStyle.Bold);
+            this.diagNetworkButton.ForeColor = System.Drawing.Color.White;
             this.diagNetworkButton.Location = new System.Drawing.Point(820, 10);
             this.diagNetworkButton.Name = "diagNetworkButton";
             this.diagNetworkButton.Size = new System.Drawing.Size(120, 35);
@@ -376,17 +409,16 @@ namespace RDPLoginMonitor
             // testInfoLabel
             // 
             this.testInfoLabel.Font = new System.Drawing.Font("Segoe UI", 8F);
-            this.testInfoLabel.ForeColor = System.Drawing.Color.DarkBlue;
+            this.testInfoLabel.ForeColor = System.Drawing.Color.LightBlue;
             this.testInfoLabel.Location = new System.Drawing.Point(10, 85);
             this.testInfoLabel.Name = "testInfoLabel";
             this.testInfoLabel.Size = new System.Drawing.Size(1000, 25);
             this.testInfoLabel.TabIndex = 17;
-            this.testInfoLabel.Text = "💡 Совет: Для проверки RDP используй кнопку \'RDP Тест\'. В тихом режиме меньше соо" +
-    "бщений, в подробном - все события.";
+            this.testInfoLabel.Text = "💡 Совет: Для проверки RDP используй кнопку 'RDP Тест'. В тихом режиме меньше сообщений, в подробном - все события.";
             // 
             // statsPanel
             // 
-            this.statsPanel.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(250)))), ((int)(((byte)(250)))), ((int)(((byte)(250)))));
+            this.statsPanel.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(25)))), ((int)(((byte)(25)))), ((int)(((byte)(25)))));
             this.statsPanel.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
             this.statsPanel.Controls.Add(this.totalAttemptsLabel);
             this.statsPanel.Controls.Add(this.failedAttemptsLabel);
@@ -401,6 +433,7 @@ namespace RDPLoginMonitor
             // totalAttemptsLabel
             // 
             this.totalAttemptsLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.totalAttemptsLabel.ForeColor = System.Drawing.Color.White;
             this.totalAttemptsLabel.Location = new System.Drawing.Point(10, 15);
             this.totalAttemptsLabel.Name = "totalAttemptsLabel";
             this.totalAttemptsLabel.Size = new System.Drawing.Size(150, 20);
@@ -410,7 +443,7 @@ namespace RDPLoginMonitor
             // failedAttemptsLabel
             // 
             this.failedAttemptsLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
-            this.failedAttemptsLabel.ForeColor = System.Drawing.Color.Red;
+            this.failedAttemptsLabel.ForeColor = System.Drawing.Color.LightCoral;
             this.failedAttemptsLabel.Location = new System.Drawing.Point(170, 15);
             this.failedAttemptsLabel.Name = "failedAttemptsLabel";
             this.failedAttemptsLabel.Size = new System.Drawing.Size(120, 20);
@@ -420,7 +453,7 @@ namespace RDPLoginMonitor
             // networkDevicesLabel
             // 
             this.networkDevicesLabel.Font = new System.Drawing.Font("Segoe UI", 9F);
-            this.networkDevicesLabel.ForeColor = System.Drawing.Color.Blue;
+            this.networkDevicesLabel.ForeColor = System.Drawing.Color.LightBlue;
             this.networkDevicesLabel.Location = new System.Drawing.Point(300, 15);
             this.networkDevicesLabel.Name = "networkDevicesLabel";
             this.networkDevicesLabel.Size = new System.Drawing.Size(150, 20);
@@ -454,24 +487,37 @@ namespace RDPLoginMonitor
             // 
             // logTab
             // 
+            this.logTab.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
             this.logTab.Controls.Add(this.logGrid);
             this.logTab.Location = new System.Drawing.Point(4, 26);
             this.logTab.Name = "logTab";
             this.logTab.Size = new System.Drawing.Size(1307, 556);
             this.logTab.TabIndex = 0;
             this.logTab.Text = "🔐 Журнал RDP";
-            this.logTab.UseVisualStyleBackColor = true;
             // 
             // logGrid
             // 
             this.logGrid.AllowUserToAddRows = false;
-            dataGridViewCellStyle1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(245)))), ((int)(((byte)(245)))), ((int)(((byte)(245)))));
-            this.logGrid.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
-            this.logGrid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
+            this.logGrid.BackgroundColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
             this.logGrid.BorderStyle = System.Windows.Forms.BorderStyle.None;
+            this.logGrid.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle1;
+            dataGridViewCellStyle1.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(50)))), ((int)(((byte)(50)))), ((int)(((byte)(50)))));
+            dataGridViewCellStyle1.Font = new System.Drawing.Font("Segoe UI", 9F);
+            dataGridViewCellStyle1.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle1.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(70)))), ((int)(((byte)(70)))), ((int)(((byte)(70)))));
+            dataGridViewCellStyle1.SelectionForeColor = System.Drawing.Color.White;
+            this.logGrid.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle1;
+            this.logGrid.DefaultCellStyle = dataGridViewCellStyle2;
+            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
+            dataGridViewCellStyle2.Font = new System.Drawing.Font("Segoe UI", 9F);
+            dataGridViewCellStyle2.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle2.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(60)))), ((int)(((byte)(60)))));
+            dataGridViewCellStyle2.SelectionForeColor = System.Drawing.Color.White;
+            this.logGrid.DefaultCellStyle = dataGridViewCellStyle2;
+            this.logGrid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
             this.logGrid.Dock = System.Windows.Forms.DockStyle.Fill;
             this.logGrid.Font = new System.Drawing.Font("Segoe UI", 9F);
-            this.logGrid.GridColor = System.Drawing.Color.LightGray;
+            this.logGrid.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(60)))), ((int)(((byte)(60)))));
             this.logGrid.Location = new System.Drawing.Point(0, 0);
             this.logGrid.Name = "logGrid";
             this.logGrid.ReadOnly = true;
@@ -481,13 +527,13 @@ namespace RDPLoginMonitor
             // 
             // textLogTab
             // 
+            this.textLogTab.BackColor = System.Drawing.Color.Black;
             this.textLogTab.Controls.Add(this.logTextBox);
             this.textLogTab.Location = new System.Drawing.Point(4, 26);
             this.textLogTab.Name = "textLogTab";
             this.textLogTab.Size = new System.Drawing.Size(1276, 556);
             this.textLogTab.TabIndex = 1;
             this.textLogTab.Text = "📝 Текстовый лог";
-            this.textLogTab.UseVisualStyleBackColor = true;
             // 
             // logTextBox
             // 
@@ -505,18 +551,21 @@ namespace RDPLoginMonitor
             // 
             // statsTab
             // 
+            this.statsTab.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
             this.statsTab.Controls.Add(this.statisticsView);
             this.statsTab.Location = new System.Drawing.Point(4, 26);
             this.statsTab.Name = "statsTab";
             this.statsTab.Size = new System.Drawing.Size(1276, 556);
             this.statsTab.TabIndex = 2;
             this.statsTab.Text = "📊 Статистика угроз";
-            this.statsTab.UseVisualStyleBackColor = true;
             // 
             // statisticsView
             // 
+            this.statisticsView.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
+            this.statisticsView.BorderStyle = System.Windows.Forms.BorderStyle.None;
             this.statisticsView.Dock = System.Windows.Forms.DockStyle.Fill;
             this.statisticsView.Font = new System.Drawing.Font("Segoe UI", 9F);
+            this.statisticsView.ForeColor = System.Drawing.Color.White;
             this.statisticsView.FullRowSelect = true;
             this.statisticsView.GridLines = true;
             this.statisticsView.HideSelection = false;
@@ -529,25 +578,38 @@ namespace RDPLoginMonitor
             // 
             // networkTab
             // 
+            this.networkTab.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
             this.networkTab.Controls.Add(this.networkGrid);
             this.networkTab.Location = new System.Drawing.Point(4, 26);
             this.networkTab.Name = "networkTab";
             this.networkTab.Size = new System.Drawing.Size(1276, 556);
             this.networkTab.TabIndex = 3;
             this.networkTab.Text = "🌐 Сетевые устройства";
-            this.networkTab.UseVisualStyleBackColor = true;
             // 
             // networkGrid
             // 
             this.networkGrid.AllowUserToAddRows = false;
             this.networkGrid.AllowUserToResizeRows = false;
-            dataGridViewCellStyle2.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(245)))), ((int)(((byte)(245)))), ((int)(((byte)(255)))));
-            this.networkGrid.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle2;
-            this.networkGrid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.DisplayedCells;
+            this.networkGrid.BackgroundColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
             this.networkGrid.BorderStyle = System.Windows.Forms.BorderStyle.None;
+            this.networkGrid.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle3;
+            dataGridViewCellStyle3.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(50)))), ((int)(((byte)(50)))), ((int)(((byte)(50)))));
+            dataGridViewCellStyle3.Font = new System.Drawing.Font("Segoe UI", 9F);
+            dataGridViewCellStyle3.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle3.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(70)))), ((int)(((byte)(70)))), ((int)(((byte)(70)))));
+            dataGridViewCellStyle3.SelectionForeColor = System.Drawing.Color.White;
+            this.networkGrid.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle3;
+            this.networkGrid.DefaultCellStyle = dataGridViewCellStyle4;
+            dataGridViewCellStyle4.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(35)))), ((int)(((byte)(35)))), ((int)(((byte)(35)))));
+            dataGridViewCellStyle4.Font = new System.Drawing.Font("Segoe UI", 9F);
+            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.White;
+            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(60)))), ((int)(((byte)(60)))));
+            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.Color.White;
+            this.networkGrid.DefaultCellStyle = dataGridViewCellStyle4;
+            this.networkGrid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.DisplayedCells;
             this.networkGrid.Dock = System.Windows.Forms.DockStyle.Fill;
             this.networkGrid.Font = new System.Drawing.Font("Segoe UI", 9F);
-            this.networkGrid.GridColor = System.Drawing.Color.LightBlue;
+            this.networkGrid.GridColor = System.Drawing.Color.FromArgb(((int)(((byte)(60)))), ((int)(((byte)(60)))), ((int)(((byte)(60)))));
             this.networkGrid.Location = new System.Drawing.Point(0, 0);
             this.networkGrid.Name = "networkGrid";
             this.networkGrid.ReadOnly = true;
@@ -558,15 +620,17 @@ namespace RDPLoginMonitor
             // 
             // MainForm
             // 
+            this.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(20)))), ((int)(((byte)(20)))), ((int)(((byte)(20)))));
             this.ClientSize = new System.Drawing.Size(1315, 756);
             this.Controls.Add(this.tabControl);
             this.Controls.Add(this.controlPanel);
             this.Controls.Add(this.statsPanel);
+            this.ForeColor = System.Drawing.Color.White;
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MinimumSize = new System.Drawing.Size(1300, 650);
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "RDP & Network Security Monitor v2.1";
+            this.Text = "RDP & Network Security Monitor v2.1 - Dark Theme";
             this.controlPanel.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)(this.maxAttemptsNum)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.timeWindowNum)).EndInit();
