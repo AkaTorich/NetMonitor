@@ -316,12 +316,28 @@ namespace RDPLoginMonitor
                     _networkMonitor.StartMonitoring();
                     _networkTimer.Start();
 
+                    // ВАЖНО: Восстанавливаем список устройств после рестарта
+                    var knownDevices = _networkMonitor.GetAllKnownDevices();
+                    if (knownDevices.Count > 0)
+                    {
+                        AddLogMessage($"Восстанавливаем {knownDevices.Count} известных устройств...", LogLevel.Info);
+                        foreach (var device in knownDevices)
+                        {
+                            _networkDevices.Add(device);
+                        }
+                        networkGrid.Refresh();
+                    }
+
                     // Запуск автосканирования если включено
                     if (autoScanCheckBox?.Checked == true)
                     {
                         _autoScanTimer.Start();
                         AddLogMessage($"Автосканирование запущено с интервалом {autoScanIntervalNum?.Value ?? 300} сек", LogLevel.Info);
                     }
+
+                    // Запускаем немедленное сканирование после старта
+                    AddLogMessage("Запускаем начальное сканирование сети...", LogLevel.Info);
+                    Task.Run(() => _networkMonitor.PerformNetworkScan());
                 }
 
                 startButton.Enabled = false;
@@ -388,6 +404,9 @@ namespace RDPLoginMonitor
             // Очищаем также наши новые коллекции
             _processedEventIds.Clear();
             _testMessageCount = 0;
+
+            // ВАЖНО: Очищаем внутренний список устройств в NetworkMonitor
+            _networkMonitor.ClearKnownDevices();
 
             AddLogMessage("🗑️ Данные очищены", LogLevel.Info);
         }

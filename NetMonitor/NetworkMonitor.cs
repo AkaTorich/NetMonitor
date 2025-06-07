@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Linq;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 namespace RDPLoginMonitor
 {
@@ -193,6 +194,29 @@ namespace RDPLoginMonitor
             WriteLog($"База данных MAC перезагружена. Записей: {_vendorDatabase.Count}", LogLevel.Success);
         }
 
+        /// <summary>
+        /// Очищает список известных устройств
+        /// </summary>
+        public void ClearKnownDevices()
+        {
+            lock (_lockObject)
+            {
+                _knownDevices.Clear();
+                WriteLog("Список известных устройств очищен", LogLevel.Info);
+            }
+        }
+
+        /// <summary>
+        /// Получает все известные устройства (для восстановления после старта)
+        /// </summary>
+        public List<NetworkDevice> GetAllKnownDevices()
+        {
+            lock (_lockObject)
+            {
+                return _knownDevices.Values.ToList();
+            }
+        }
+
         public void StartMonitoring()
         {
             if (_isRunning) return;
@@ -224,20 +248,60 @@ namespace RDPLoginMonitor
                 var networkPrefix = GetNetworkPrefix(localIP);
                 WriteLog($"Сканируем сеть: {networkPrefix}.1-254", LogLevel.Info);
 
-                // Сначала сканируем ARP таблицу для быстрого обнаружения
+                // 1. Сначала сканируем ARP таблицу для быстрого обнаружения
+                WriteLog("Этап 1: Сканирование ARP таблицы...", LogLevel.Info);
                 ScanARPTable();
 
-                // Затем пингуем весь диапазон
-                var tasks = new List<Task>();
+                // 2. Параллельное пингование всего диапазона
+                WriteLog("Этап 2: Пингование всего диапазона IP адресов...", LogLevel.Info);
+                var pingTasks = new List<Task>();
+                var semaphore = new SemaphoreSlim(50); // Ограничиваем количество одновременных пингов
+
                 for (int i = 1; i <= 254; i++)
                 {
                     var ip = $"{networkPrefix}.{i}";
-                    tasks.Add(Task.Run(() => ScanDevice(ip)));
+                    pingTasks.Add(Task.Run(async () =>
+                    {
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            await ScanDeviceAsync(ip);
+                        }
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    }));
                 }
 
-                Task.WaitAll(tasks.ToArray(), TimeSpan.FromMinutes(3));
+                Task.WaitAll(pingTasks.ToArray(), TimeSpan.FromMinutes(3));
+
+                // 3. Дополнительное сканирование через nslookup для пропущенных устройств
+                WriteLog("Этап 3: Проверка DNS записей...", LogLevel.Info);
+                ScanViaReverseDNS(networkPrefix);
+
+                // 4. Обновляем ARP таблицу и сканируем еще раз
+                WriteLog("Этап 4: Обновление ARP и повторное сканирование...", LogLevel.Info);
+                RefreshARPTable(networkPrefix);
+                System.Threading.Thread.Sleep(2000); // Даем время на обновление ARP
+                ScanARPTable();
 
                 WriteLog($"Сканирование завершено. Найдено устройств: {_knownDevices.Count}", LogLevel.Success);
+
+                // Выводим сводку найденных устройств
+                lock (_lockObject)
+                {
+                    var deviceTypes = _knownDevices.Values
+                        .GroupBy(d => d.DeviceType)
+                        .Select(g => $"{g.Key}: {g.Count()}")
+                        .ToList();
+
+                    WriteLog("Найденные типы устройств:", LogLevel.Info);
+                    foreach (var type in deviceTypes)
+                    {
+                        WriteLog($"  {type}", LogLevel.Info);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -245,81 +309,27 @@ namespace RDPLoginMonitor
             }
         }
 
-        private void ScanARPTable()
-        {
-            try
-            {
-                var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "arp",
-                        Arguments = "-a",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    }
-                };
-
-                process.Start();
-                var output = process.StandardOutput.ReadToEnd();
-                process.WaitForExit();
-
-                WriteLog($"ARP таблица получена, размер: {output.Length} символов", LogLevel.Debug);
-
-                // Парсим ARP таблицу
-                var lines = output.Split('\n');
-                int deviceCount = 0;
-
-                foreach (var line in lines)
-                {
-                    // Ищем строки вида: IP-адрес MAC-адрес тип
-                    var match = Regex.Match(line.Trim(), @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F-]{17})\s+(\w+)");
-                    if (match.Success)
-                    {
-                        deviceCount++;
-                        var ip = match.Groups[1].Value;
-                        var mac = match.Groups[2].Value.ToUpper().Replace("-", ":");
-
-                        WriteLog($"ARP запись #{deviceCount}: IP={ip}, MAC={mac}", LogLevel.Debug);
-
-                        // Создаем устройство из ARP записи
-                        var device = new NetworkDevice
-                        {
-                            IPAddress = ip,
-                            MACAddress = mac,
-                            Hostname = GetHostname(ip),
-                            Status = "Активен",
-                            LastSeen = DateTime.Now
-                        };
-
-                        device.Vendor = GetVendorFromMAC(device.MACAddress);
-                        device.DeviceType = DetermineDeviceType(device);
-                        device.OperatingSystem = DetectOperatingSystem(device);
-                        device.OpenPorts = ScanCommonPorts(ip);
-                        device.Description = GenerateDeviceDescription(device);
-
-                        ProcessDevice(device);
-                    }
-                }
-
-                WriteLog($"Обработано {deviceCount} записей из ARP таблицы", LogLevel.Info);
-            }
-            catch (Exception ex)
-            {
-                WriteLog($"Ошибка сканирования ARP: {ex.Message}", LogLevel.Error);
-            }
-        }
-
-        private void ScanDevice(string ipAddress)
+        // Новый асинхронный метод сканирования устройства
+        private async Task ScanDeviceAsync(string ipAddress)
         {
             try
             {
                 using (var ping = new Ping())
                 {
-                    // Увеличиваем timeout для мобильных устройств
-                    var reply = ping.Send(ipAddress, 2000);
-                    if (reply.Status == IPStatus.Success)
+                    // Пробуем несколько раз с разными таймаутами
+                    var timeouts = new[] { 1000, 2000, 3000 };
+                    PingReply reply = null;
+
+                    foreach (var timeout in timeouts)
+                    {
+                        reply = await ping.SendPingAsync(ipAddress, timeout);
+                        if (reply.Status == IPStatus.Success)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (reply != null && reply.Status == IPStatus.Success)
                     {
                         WriteLog($"Пинг успешен: {ipAddress} ({reply.RoundtripTime}ms)", LogLevel.Debug);
 
@@ -349,6 +359,339 @@ namespace RDPLoginMonitor
             }
         }
 
+        // Новый метод: Обновление ARP таблицы принудительным пингованием
+        private void RefreshARPTable(string networkPrefix)
+        {
+            try
+            {
+                WriteLog("Обновляем ARP таблицу быстрым пингованием...", LogLevel.Debug);
+
+                // Быстрое пингование всей подсети для обновления ARP
+                var refreshTasks = new List<Task>();
+
+                for (int i = 1; i <= 254; i++)
+                {
+                    var ip = $"{networkPrefix}.{i}";
+                    refreshTasks.Add(Task.Run(async () =>
+                    {
+                        try
+                        {
+                            using (var ping = new Ping())
+                            {
+                                // Короткий таймаут для быстрого обновления ARP
+                                await ping.SendPingAsync(ip, 100);
+                            }
+                        }
+                        catch { } // Игнорируем ошибки, нам важно только обновить ARP
+                    }));
+                }
+
+                Task.WaitAll(refreshTasks.ToArray(), TimeSpan.FromSeconds(30));
+                WriteLog("ARP таблица обновлена", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка обновления ARP: {ex.Message}", LogLevel.Warning);
+            }
+        }
+
+        // Новый метод: Сканирование через обратный DNS
+        private void ScanViaReverseDNS(string networkPrefix)
+        {
+            try
+            {
+                WriteLog("Проверяем DNS записи для пропущенных устройств...", LogLevel.Debug);
+
+                var dnsTasks = new List<Task>();
+                var semaphore = new SemaphoreSlim(20); // Ограничиваем DNS запросы
+
+                for (int i = 1; i <= 254; i++)
+                {
+                    var ip = $"{networkPrefix}.{i}";
+
+                    // Пропускаем уже найденные устройства
+                    lock (_lockObject)
+                    {
+                        if (_knownDevices.ContainsKey(ip))
+                            continue;
+                    }
+
+                    dnsTasks.Add(Task.Run(async () =>
+                    {
+                        await semaphore.WaitAsync();
+                        try
+                        {
+                            var hostEntry = await Dns.GetHostEntryAsync(ip);
+                            if (!string.IsNullOrEmpty(hostEntry.HostName) && hostEntry.HostName != ip)
+                            {
+                                WriteLog($"DNS нашел устройство: {ip} = {hostEntry.HostName}", LogLevel.Info);
+
+                                // Пробуем еще раз пропинговать
+                                await ScanDeviceAsync(ip);
+                            }
+                        }
+                        catch { } // Игнорируем ошибки DNS
+                        finally
+                        {
+                            semaphore.Release();
+                        }
+                    }));
+                }
+
+                Task.WaitAll(dnsTasks.ToArray(), TimeSpan.FromSeconds(30));
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка DNS сканирования: {ex.Message}", LogLevel.Warning);
+            }
+        }
+
+        /// <summary>
+        /// Принудительно сканирует конкретный IP адрес
+        /// </summary>
+        public async Task<bool> ForceScanSpecificIP(string ipAddress)
+        {
+            try
+            {
+                WriteLog($"Принудительное сканирование {ipAddress}...", LogLevel.Info);
+
+                // Сначала пробуем обновить ARP для этого IP
+                using (var ping = new Ping())
+                {
+                    // Несколько быстрых пингов для обновления ARP
+                    for (int i = 0; i < 3; i++)
+                    {
+                        await ping.SendPingAsync(ipAddress, 500);
+                        await Task.Delay(100);
+                    }
+                }
+
+                // Теперь полное сканирование
+                await ScanDeviceAsync(ipAddress);
+
+                // Проверяем, нашли ли устройство
+                lock (_lockObject)
+                {
+                    if (_knownDevices.ContainsKey(ipAddress))
+                    {
+                        WriteLog($"✅ Устройство {ipAddress} успешно добавлено", LogLevel.Success);
+                        return true;
+                    }
+                }
+
+                // Если не нашли через пинг, пробуем добавить вручную
+                WriteLog($"Устройство {ipAddress} не отвечает на пинг, добавляем вручную...", LogLevel.Warning);
+
+                var device = new NetworkDevice
+                {
+                    IPAddress = ipAddress,
+                    MACAddress = GetMACAddress(ipAddress),
+                    Hostname = GetHostname(ipAddress),
+                    Status = "Недоступен",
+                    LastSeen = DateTime.Now,
+                    FirstSeen = DateTime.Now,
+                    DeviceType = "❓ Неизвестное устройство",
+                    OperatingSystem = "Неизвестно",
+                    Vendor = "Неизвестно",
+                    Description = "Устройство добавлено вручную",
+                    IsNew = true
+                };
+
+                // Если получили MAC, пробуем определить производителя
+                if (device.MACAddress != "Неизвестно")
+                {
+                    device.Vendor = GetVendorFromMAC(device.MACAddress);
+                    device.DeviceType = DetermineDeviceType(device);
+                }
+
+                ProcessDevice(device);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка принудительного сканирования {ipAddress}: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Принудительно обновляет MAC адрес для устройства
+        /// </summary>
+        public async Task<string> ForceUpdateMacAddress(string ipAddress)
+        {
+            try
+            {
+                WriteLog($"Принудительное обновление MAC для {ipAddress}...", LogLevel.Info);
+
+                // 1. Сначала пингуем несколько раз для обновления ARP
+                using (var ping = new Ping())
+                {
+                    for (int i = 0; i < 5; i++)
+                    {
+                        try
+                        {
+                            var reply = await ping.SendPingAsync(ipAddress, 1000);
+                            if (reply.Status == IPStatus.Success)
+                            {
+                                WriteLog($"Ping {i + 1}/5 успешен: {reply.RoundtripTime}ms", LogLevel.Debug);
+                            }
+                        }
+                        catch { }
+                        await Task.Delay(200);
+                    }
+                }
+
+                // 2. Ждем обновления ARP кеша
+                await Task.Delay(500);
+
+                // 3. Пробуем все методы получения MAC
+                var mac = GetMACAddress(ipAddress);
+
+                // 4. Обновляем устройство если MAC найден
+                if (!string.IsNullOrEmpty(mac) && mac != "Неизвестно")
+                {
+                    lock (_lockObject)
+                    {
+                        if (_knownDevices.ContainsKey(ipAddress))
+                        {
+                            var device = _knownDevices[ipAddress];
+                            device.MACAddress = mac;
+
+                            // Обновляем вендора и тип устройства
+                            device.Vendor = GetVendorFromMAC(mac);
+                            device.DeviceType = DetermineDeviceType(device);
+
+                            OnDeviceStatusChanged?.Invoke(device);
+
+                            WriteLog($"✅ MAC обновлен для {ipAddress}: {mac} ({device.Vendor})", LogLevel.Success);
+                        }
+                    }
+                    return mac;
+                }
+                else
+                {
+                    WriteLog($"❌ Не удалось получить MAC для {ipAddress}", LogLevel.Error);
+                    return "Неизвестно";
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка обновления MAC: {ex.Message}", LogLevel.Error);
+                return "Неизвестно";
+            }
+        }
+
+        private void ScanARPTable()
+        {
+            try
+            {
+                // НЕ очищаем ARP кеш - просто читаем текущую таблицу
+
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "arp",
+                        Arguments = "-a",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.GetEncoding(866) // Для корректного отображения русских символов
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                WriteLog($"ARP таблица получена, размер: {output.Length} символов", LogLevel.Debug);
+
+                // Парсим ARP таблицу
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                int deviceCount = 0;
+                int skippedCount = 0;
+
+                foreach (var line in lines)
+                {
+                    // Пропускаем заголовки и пустые строки
+                    if (string.IsNullOrWhiteSpace(line) ||
+                        line.Contains("Interface") ||
+                        line.Contains("Internet Address") ||
+                        line.Contains("Интерфейс") ||
+                        line.Contains("Адрес"))
+                    {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // Паттерны для разных форматов вывода
+                    var patterns = new[]
+                    {
+                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})\s+(\w+)",
+                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2})",
+                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})"
+                    };
+
+                    Match match = null;
+                    foreach (var pattern in patterns)
+                    {
+                        match = Regex.Match(line.Trim(), pattern);
+                        if (match.Success) break;
+                    }
+
+                    if (match != null && match.Success)
+                    {
+                        var ip = match.Groups[1].Value;
+                        var mac = NormalizeMacAddress(match.Groups[2].Value);
+
+                        // НЕ пропускаем multicast и broadcast - это тоже важная информация!
+
+                        deviceCount++;
+                        WriteLog($"ARP запись #{deviceCount}: IP={ip}, MAC={mac}", LogLevel.Debug);
+
+                        // Создаем устройство из ARP записи
+                        var device = new NetworkDevice
+                        {
+                            IPAddress = ip,
+                            MACAddress = mac,
+                            Hostname = GetHostname(ip),
+                            Status = "Активен",
+                            LastSeen = DateTime.Now
+                        };
+
+                        device.Vendor = GetVendorFromMAC(device.MACAddress);
+                        device.DeviceType = DetermineDeviceType(device);
+                        device.OperatingSystem = DetectOperatingSystem(device);
+
+                        // Сканирование портов делаем опционально для ускорения
+                        if (deviceCount <= 20) // Сканируем порты только для первых 20 устройств
+                        {
+                            device.OpenPorts = ScanCommonPorts(ip);
+                        }
+                        else
+                        {
+                            device.OpenPorts = new List<int>();
+                        }
+
+                        device.Description = GenerateDeviceDescription(device);
+
+                        ProcessDevice(device);
+                    }
+                    else
+                    {
+                        WriteLog($"Не удалось распарсить строку: {line}", LogLevel.Debug);
+                        skippedCount++;
+                    }
+                }
+
+                WriteLog($"Обработано {deviceCount} записей из ARP таблицы, пропущено {skippedCount}", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка сканирования ARP: {ex.Message}", LogLevel.Error);
+            }
+        }
+
         private void ProcessDevice(NetworkDevice device)
         {
             lock (_lockObject)
@@ -361,6 +704,22 @@ namespace RDPLoginMonitor
                     var existingDevice = _knownDevices[key];
                     existingDevice.Status = device.Status;
                     existingDevice.LastSeen = device.LastSeen;
+
+                    // Обновляем MAC если он был неизвестен или изменился
+                    if ((existingDevice.MACAddress == "Неизвестно" || string.IsNullOrEmpty(existingDevice.MACAddress))
+                        && device.MACAddress != "Неизвестно" && !string.IsNullOrEmpty(device.MACAddress))
+                    {
+                        existingDevice.MACAddress = device.MACAddress;
+                        existingDevice.Vendor = device.Vendor;
+                        existingDevice.DeviceType = device.DeviceType;
+                        WriteLog($"Обновлен MAC для {device.IPAddress}: {device.MACAddress}", LogLevel.Success);
+                    }
+
+                    // Обновляем hostname если он изменился
+                    if (device.Hostname != "Неизвестно" && existingDevice.Hostname != device.Hostname)
+                    {
+                        existingDevice.Hostname = device.Hostname;
+                    }
 
                     OnDeviceStatusChanged?.Invoke(existingDevice);
                 }
@@ -500,7 +859,68 @@ namespace RDPLoginMonitor
             return $"{parts[0]}.{parts[1]}.{parts[2]}";
         }
 
+        // Улучшенный метод получения MAC адреса с множественными методами
         private string GetMACAddress(string ipAddress)
+        {
+            try
+            {
+                WriteLog($"Получаем MAC для IP: {ipAddress}", LogLevel.Debug);
+
+                // Метод 1: Прямой запрос ARP для конкретного IP
+                var macViaArp = GetMacViaArpCommand(ipAddress);
+                if (!string.IsNullOrEmpty(macViaArp) && macViaArp != "Неизвестно")
+                {
+                    WriteLog($"MAC получен через ARP: {macViaArp}", LogLevel.Debug);
+                    return macViaArp;
+                }
+
+                // Метод 2: Поиск в полной ARP таблице
+                var macViaTable = GetMacFromArpTable(ipAddress);
+                if (!string.IsNullOrEmpty(macViaTable) && macViaTable != "Неизвестно")
+                {
+                    WriteLog($"MAC найден в ARP таблице: {macViaTable}", LogLevel.Debug);
+                    return macViaTable;
+                }
+
+                // Метод 3: Через nbtstat для Windows устройств
+                var macViaNbtstat = GetMacViaNbtstat(ipAddress);
+                if (!string.IsNullOrEmpty(macViaNbtstat) && macViaNbtstat != "Неизвестно")
+                {
+                    WriteLog($"MAC получен через nbtstat: {macViaNbtstat}", LogLevel.Debug);
+                    return macViaNbtstat;
+                }
+
+                // Метод 4: Через ping + arp (обновляем ARP кеш)
+                var macAfterPing = GetMacAfterPing(ipAddress);
+                if (!string.IsNullOrEmpty(macAfterPing) && macAfterPing != "Неизвестно")
+                {
+                    WriteLog($"MAC получен после ping: {macAfterPing}", LogLevel.Debug);
+                    return macAfterPing;
+                }
+
+                // Метод 5: Для локального компьютера
+                if (ipAddress == GetLocalIPAddress())
+                {
+                    var localMac = GetLocalMacAddress();
+                    if (!string.IsNullOrEmpty(localMac))
+                    {
+                        WriteLog($"Локальный MAC: {localMac}", LogLevel.Debug);
+                        return localMac;
+                    }
+                }
+
+                WriteLog($"Не удалось получить MAC для {ipAddress}", LogLevel.Warning);
+                return "Неизвестно";
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка получения MAC для {ipAddress}: {ex.Message}", LogLevel.Error);
+                return "Неизвестно";
+            }
+        }
+
+        // Метод 1: Прямой ARP запрос
+        private string GetMacViaArpCommand(string ipAddress)
         {
             try
             {
@@ -512,7 +932,8 @@ namespace RDPLoginMonitor
                         Arguments = $"-a {ipAddress}",
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
-                        CreateNoWindow = true
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.GetEncoding(866) // Кодировка DOS для русской Windows
                     }
                 };
 
@@ -520,21 +941,208 @@ namespace RDPLoginMonitor
                 var output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
 
-                var match = Regex.Match(output, @"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})");
-                return match.Success ? match.Value.ToUpper() : "Неизвестно";
+                // Ищем MAC в разных форматах
+                var patterns = new[]
+                {
+                    @"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})",
+                    @"([0-9A-Fa-f]{2}\s){5}([0-9A-Fa-f]{2})",
+                    @"([0-9A-Fa-f]{4}\.){2}([0-9A-Fa-f]{4})" // Cisco формат
+                };
+
+                foreach (var pattern in patterns)
+                {
+                    var match = Regex.Match(output, pattern);
+                    if (match.Success)
+                    {
+                        var mac = match.Value.ToUpper();
+                        // Нормализуем формат
+                        mac = NormalizeMacAddress(mac);
+                        return mac;
+                    }
+                }
+
+                return "Неизвестно";
             }
-            catch (Exception)
+            catch
             {
                 return "Неизвестно";
             }
         }
 
+        // Метод 2: Поиск в полной ARP таблице
+        private string GetMacFromArpTable(string ipAddress)
+        {
+            try
+            {
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "arp",
+                        Arguments = "-a",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.GetEncoding(866)
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                // Разбиваем на строки
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+                foreach (var line in lines)
+                {
+                    if (line.Contains(ipAddress))
+                    {
+                        // Паттерн для поиска MAC в строке с нужным IP
+                        var match = Regex.Match(line, @"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})");
+                        if (match.Success)
+                        {
+                            return NormalizeMacAddress(match.Value.ToUpper());
+                        }
+                    }
+                }
+
+                return "Неизвестно";
+            }
+            catch
+            {
+                return "Неизвестно";
+            }
+        }
+
+        // Метод 3: Через nbtstat (для Windows машин)
+        private string GetMacViaNbtstat(string ipAddress)
+        {
+            try
+            {
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "nbtstat",
+                        Arguments = $"-a {ipAddress}",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.GetEncoding(866)
+                    }
+                };
+
+                process.Start();
+
+                // Ограничиваем время выполнения
+                if (!process.WaitForExit(3000))
+                {
+                    process.Kill();
+                    return "Неизвестно";
+                }
+
+                var output = process.StandardOutput.ReadToEnd();
+
+                // Ищем строку "MAC Address = XX-XX-XX-XX-XX-XX"
+                var match = Regex.Match(output, @"MAC[^=]*=\s*([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})");
+                if (match.Success)
+                {
+                    var macPart = Regex.Match(match.Value, @"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})");
+                    if (macPart.Success)
+                    {
+                        return NormalizeMacAddress(macPart.Value.ToUpper());
+                    }
+                }
+
+                return "Неизвестно";
+            }
+            catch
+            {
+                return "Неизвестно";
+            }
+        }
+
+        // Метод 4: Ping + ARP
+        private string GetMacAfterPing(string ipAddress)
+        {
+            try
+            {
+                // Сначала пингуем для обновления ARP кеша
+                using (var ping = new Ping())
+                {
+                    ping.Send(ipAddress, 1000);
+                    System.Threading.Thread.Sleep(100); // Даем время на обновление ARP
+                }
+
+                // Теперь пробуем получить MAC
+                return GetMacViaArpCommand(ipAddress);
+            }
+            catch
+            {
+                return "Неизвестно";
+            }
+        }
+
+        // Метод 5: Получение локального MAC адреса
+        private string GetLocalMacAddress()
+        {
+            try
+            {
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus == OperationalStatus.Up &&
+                        nic.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                    {
+                        var mac = nic.GetPhysicalAddress().ToString();
+                        if (!string.IsNullOrEmpty(mac) && mac.Length == 12)
+                        {
+                            // Форматируем MAC
+                            var formattedMac = string.Join(":",
+                                Enumerable.Range(0, 6).Select(i => mac.Substring(i * 2, 2)));
+                            return formattedMac.ToUpper();
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return "Неизвестно";
+        }
+
+        // Вспомогательный метод для нормализации MAC адреса
+        private string NormalizeMacAddress(string mac)
+        {
+            if (string.IsNullOrEmpty(mac)) return mac;
+
+            // Удаляем все разделители
+            var cleanMac = Regex.Replace(mac, @"[^0-9A-Fa-f]", "");
+
+            // Проверяем длину
+            if (cleanMac.Length != 12) return mac;
+
+            // Форматируем как XX:XX:XX:XX:XX:XX
+            var formatted = string.Join(":",
+                Enumerable.Range(0, 6).Select(i => cleanMac.Substring(i * 2, 2)));
+
+            return formatted.ToUpper();
+        }
+
+        // Улучшенный метод получения hostname
         private string GetHostname(string ipAddress)
         {
             try
             {
-                var hostEntry = System.Net.Dns.GetHostEntry(ipAddress);
-                return hostEntry.HostName;
+                // Используем таймаут для DNS запроса
+                var task = Task.Run(() => Dns.GetHostEntry(ipAddress));
+
+                if (task.Wait(TimeSpan.FromSeconds(3)))
+                {
+                    return task.Result.HostName;
+                }
+
+                return "Неизвестно";
             }
             catch (Exception)
             {
@@ -542,7 +1150,8 @@ namespace RDPLoginMonitor
             }
         }
 
-        private string GetVendorFromMAC(string macAddress)
+        // Возвращаем GetVendorFromMAC как public для использования в MainForm
+        public string GetVendorFromMAC(string macAddress)
         {
             if (string.IsNullOrEmpty(macAddress) || macAddress == "Неизвестно")
             {
@@ -577,6 +1186,10 @@ namespace RDPLoginMonitor
                 if (prefix == "FFFFFF")
                 {
                     return "Broadcast адрес";
+                }
+                if (prefix.StartsWith("3333"))
+                {
+                    return "IPv6 Multicast";
                 }
 
                 lock (_lockObject)
@@ -686,10 +1299,12 @@ namespace RDPLoginMonitor
             var vendor = device.Vendor?.ToLower() ?? "";
 
             // Проверяем специальные типы адресов
-            if (vendor == "multicast")
+            if (vendor.Contains("multicast"))
                 return "📡 Multicast адрес";
-            if (vendor == "broadcast")
+            if (vendor.Contains("broadcast"))
                 return "📢 Broadcast адрес";
+            if (vendor.Contains("ipv6 multicast"))
+                return "📡 IPv6 Multicast";
 
             // Сначала пытаемся определить тип только по hostname (более точно)
             if (hostname.Contains("iphone") || hostname.Contains("phone"))
@@ -847,6 +1462,77 @@ namespace RDPLoginMonitor
                 parts.Add($"Порты: {string.Join(", ", device.OpenPorts)}");
 
             return string.Join(" | ", parts);
+        }
+
+        /// <summary>
+        /// Выводит отладочную информацию о текущем состоянии
+        /// </summary>
+        public void DebugCurrentState()
+        {
+            WriteLog("\n=== ОТЛАДКА СОСТОЯНИЯ СЕТЕВОГО МОНИТОРА ===", LogLevel.Info);
+
+            lock (_lockObject)
+            {
+                WriteLog($"Всего известных устройств: {_knownDevices.Count}", LogLevel.Info);
+
+                var devicesByStatus = _knownDevices.Values
+                    .GroupBy(d => d.Status)
+                    .Select(g => $"{g.Key}: {g.Count()}")
+                    .ToList();
+
+                WriteLog("Устройства по статусу:", LogLevel.Info);
+                foreach (var status in devicesByStatus)
+                {
+                    WriteLog($"  {status}", LogLevel.Info);
+                }
+
+                WriteLog("\nСписок всех устройств:", LogLevel.Info);
+                foreach (var device in _knownDevices.Values.OrderBy(d => d.IPAddress))
+                {
+                    WriteLog($"  IP: {device.IPAddress,-15} MAC: {device.MACAddress,-17} Hostname: {device.Hostname,-30} Status: {device.Status}",
+                            device.Status == "Активен" ? LogLevel.Success : LogLevel.Warning);
+                }
+            }
+
+            // Проверяем текущую ARP таблицу
+            WriteLog("\n=== ТЕКУЩАЯ ARP ТАБЛИЦА ===", LogLevel.Info);
+            try
+            {
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "arp",
+                        Arguments = "-a",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                var lines = output.Split('\n');
+                var arpCount = 0;
+
+                foreach (var line in lines)
+                {
+                    if (Regex.IsMatch(line.Trim(), @"\d+\.\d+\.\d+\.\d+\s+[0-9a-fA-F-]{17}"))
+                    {
+                        arpCount++;
+                    }
+                }
+
+                WriteLog($"Записей в ARP таблице: {arpCount}", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка чтения ARP: {ex.Message}", LogLevel.Error);
+            }
+
+            WriteLog("=== КОНЕЦ ОТЛАДКИ ===\n", LogLevel.Info);
         }
 
         /// <summary>
