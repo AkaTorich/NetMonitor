@@ -19,6 +19,12 @@ namespace RDPLoginMonitor
         private bool _isRunning = false;
         private readonly Dictionary<string, string> _vendorDatabase;
         private readonly string _macDatabasePath;
+        // Новое: ограничение параллелизма для обновления статусов
+        private readonly SemaphoreSlim _statusSemaphore = new SemaphoreSlim(20);
+        // Новое: локальные подсети (несколько)
+        private List<(IPAddress ip, IPAddress mask, string prefix)> _localSubnets = new List<(IPAddress, IPAddress, string)>();
+        private IPAddress _localIPv4Address; // Первый IP (сохраняем для обратной совместимости)
+        private IPAddress _localSubnetMask;  // Его маска
 
         // События для логирования
         public event Action<string, LogLevel> OnLogMessage;
@@ -236,71 +242,59 @@ namespace RDPLoginMonitor
 
             try
             {
-                var localIP = GetLocalIPAddress();
-                if (string.IsNullOrEmpty(localIP))
+                // Обнаружение ВСЕХ локальных подсетей
+                DiscoverLocalSubnets();
+                if (_localSubnets.Count == 0)
                 {
-                    WriteLog("Не удалось определить локальный IP", LogLevel.Error);
+                    WriteLog("Не удалось определить локальные подсети", LogLevel.Error);
                     return;
                 }
 
-                WriteLog($"Начинаем сканирование с локального IP: {localIP}", LogLevel.Info);
-
-                var networkPrefix = GetNetworkPrefix(localIP);
-                WriteLog($"Сканируем сеть: {networkPrefix}.1-254", LogLevel.Info);
-
-                // 1. Сначала сканируем ARP таблицу для быстрого обнаружения
-                WriteLog("Этап 1: Сканирование ARP таблицы...", LogLevel.Info);
-                ScanARPTable();
-
-                // 2. Параллельное пингование всего диапазона
-                WriteLog("Этап 2: Пингование всего диапазона IP адресов...", LogLevel.Info);
-                var pingTasks = new List<Task>();
-                var semaphore = new SemaphoreSlim(50); // Ограничиваем количество одновременных пингов
-
-                for (int i = 1; i <= 254; i++)
+                foreach (var (ifaceIp, mask, prefix) in _localSubnets)
                 {
-                    var ip = $"{networkPrefix}.{i}";
-                    pingTasks.Add(Task.Run(async () =>
+                    WriteLog($"Найден локальный IP через NetworkInterface: {ifaceIp}", LogLevel.Debug);
+                    WriteLog($"Начинаем сканирование с локального IP: {ifaceIp}", LogLevel.Info);
+                    WriteLog($"Сканируем сеть: {prefix}.1-254", LogLevel.Info);
+
+                    // 1. Сначала сканируем ARP таблицу для этой подсети
+                    WriteLog("Этап 1: Сканирование ARP таблицы...", LogLevel.Info);
+                    ScanARPTable(ifaceIp);
+
+                    // 2. Параллельное пингование всего диапазона /24 для этой подсети
+                    WriteLog("Этап 2: Пингование всего диапазона IP адресов...", LogLevel.Info);
+                    var pingTasks = new List<Task>();
+                    var semaphore = new SemaphoreSlim(50);
+                    for (int i = 1; i <= 254; i++)
                     {
-                        await semaphore.WaitAsync();
-                        try
+                        var ip = $"{prefix}.{i}";
+                        pingTasks.Add(Task.Run(async () =>
                         {
-                            await ScanDeviceAsync(ip);
-                        }
-                        finally
-                        {
-                            semaphore.Release();
-                        }
-                    }));
+                            await semaphore.WaitAsync();
+                            try { await ScanDeviceAsync(ip); } finally { semaphore.Release(); }
+                        }));
+                    }
+                    Task.WaitAll(pingTasks.ToArray(), TimeSpan.FromMinutes(3));
+
+                    // 3. Обратный DNS в рамках подсети
+                    WriteLog("Этап 3: Проверка DNS записей...", LogLevel.Info);
+                    ScanViaReverseDNS(prefix);
+
+                    // 4. Обновление ARP и повторное сканирование для подсети
+                    WriteLog("Этап 4: Обновление ARP и повторное сканирование...", LogLevel.Info);
+                    RefreshARPTable(prefix);
+                    Thread.Sleep(2000);
+                    ScanARPTable(ifaceIp);
                 }
 
-                Task.WaitAll(pingTasks.ToArray(), TimeSpan.FromMinutes(3));
-
-                // 3. Дополнительное сканирование через nslookup для пропущенных устройств
-                WriteLog("Этап 3: Проверка DNS записей...", LogLevel.Info);
-                ScanViaReverseDNS(networkPrefix);
-
-                // 4. Обновляем ARP таблицу и сканируем еще раз
-                WriteLog("Этап 4: Обновление ARP и повторное сканирование...", LogLevel.Info);
-                RefreshARPTable(networkPrefix);
-                System.Threading.Thread.Sleep(2000); // Даем время на обновление ARP
-                ScanARPTable();
-
                 WriteLog($"Сканирование завершено. Найдено устройств: {_knownDevices.Count}", LogLevel.Success);
-
-                // Выводим сводку найденных устройств
                 lock (_lockObject)
                 {
                     var deviceTypes = _knownDevices.Values
                         .GroupBy(d => d.DeviceType)
                         .Select(g => $"{g.Key}: {g.Count()}")
                         .ToList();
-
                     WriteLog("Найденные типы устройств:", LogLevel.Info);
-                    foreach (var type in deviceTypes)
-                    {
-                        WriteLog($"  {type}", LogLevel.Info);
-                    }
+                    foreach (var t in deviceTypes) WriteLog($"  {t}", LogLevel.Info);
                 }
             }
             catch (Exception ex)
@@ -341,6 +335,13 @@ namespace RDPLoginMonitor
                             Status = "Активен",
                             LastSeen = DateTime.Now
                         };
+
+                        // Если MAC неизвестен и это не multicast/broadcast — пропускаем
+                        if (device.MACAddress == "Неизвестно" && !IsMulticastOrBroadcast(ipAddress))
+                        {
+                            WriteLog($"Пропуск {ipAddress}: MAC неизвестен", LogLevel.Debug);
+                            return;
+                        }
 
                         device.Vendor = GetVendorFromMAC(device.MACAddress);
                         device.DeviceType = DetermineDeviceType(device);
@@ -592,7 +593,7 @@ namespace RDPLoginMonitor
                     StartInfo = new ProcessStartInfo
                     {
                         FileName = "arp",
-                        Arguments = "-a",
+                        Arguments = _localIPv4Address != null ? $"-a -N {_localIPv4Address}" : "-a",
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         CreateNoWindow = true,
@@ -613,39 +614,63 @@ namespace RDPLoginMonitor
 
                 foreach (var line in lines)
                 {
-                    // Пропускаем заголовки и пустые строки
-                    if (string.IsNullOrWhiteSpace(line) ||
-                        line.Contains("Interface") ||
-                        line.Contains("Internet Address") ||
-                        line.Contains("Интерфейс") ||
-                        line.Contains("Адрес"))
+                    // Пропускаем заголовки и пустые строки (регистронезависимо)
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        skippedCount++;
+                        continue;
+                    }
+                    var headerLower = line.Trim().ToLowerInvariant();
+                    if (headerLower.Contains("interface") || headerLower.Contains("internet address") || headerLower.Contains("интерфейс") || headerLower.Contains("адрес"))
                     {
                         skippedCount++;
                         continue;
                     }
 
-                    // Паттерны для разных форматов вывода
-                    var patterns = new[]
-                    {
-                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})\s+(\w+)",
-                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2}-[0-9a-fA-F]{2})",
-                        @"(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})"
-                    };
+                    var trimmed = line.Trim();
 
-                    Match match = null;
-                    foreach (var pattern in patterns)
+                    // Паттерны для разных форматов вывода
+                    var pIpMacTypeDash = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+(\S+)";
+                    var pIpMacTypeColon = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(\S+)";
+                    var pIpMacDash = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})";
+                    var pIpMacColon = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})";
+                    var pIpTypeRu = @"^(\d+\.\d+\.\d+\.\d+)\s+(динамический|статический)"; // Русский вывод без MAC
+
+                    string ip = null;
+                    string macRaw = null;
+                    string type = null;
+
+                    Match m;
+                    if ((m = Regex.Match(trimmed, pIpMacTypeDash)).Success || (m = Regex.Match(trimmed, pIpMacTypeColon)).Success)
                     {
-                        match = Regex.Match(line.Trim(), pattern);
-                        if (match.Success) break;
+                        ip = m.Groups[1].Value;
+                        macRaw = m.Groups[2].Value;
+                        type = m.Groups[3].Value;
+                    }
+                    else if ((m = Regex.Match(trimmed, pIpMacDash)).Success || (m = Regex.Match(trimmed, pIpMacColon)).Success)
+                    {
+                        ip = m.Groups[1].Value;
+                        macRaw = m.Groups[2].Value;
+                    }
+                    else if ((m = Regex.Match(trimmed, pIpTypeRu)).Success)
+                    {
+                        ip = m.Groups[1].Value;
+                        type = m.Groups[2].Value; // MAC отсутствует в выводе
                     }
 
-                    if (match != null && match.Success)
+                    if (!string.IsNullOrEmpty(ip))
                     {
-                        var ip = match.Groups[1].Value;
-                        var mac = NormalizeMacAddress(match.Groups[2].Value);
+                        // Фильтруем только локальную подсеть и убираем спец-адреса
+                        if (IsSpecialOrNonLocal(ip))
+                        {
+                            skippedCount++;
+                            continue;
+                        }
+                        var mac = !string.IsNullOrEmpty(macRaw) ? NormalizeMacAddress(macRaw) : "Неизвестно";
 
                         // НЕ пропускаем multicast и broadcast - это тоже важная информация!
 
+                        // Избегаем дубликатов внутри одного прохода по строкам
                         deviceCount++;
                         WriteLog($"ARP запись #{deviceCount}: IP={ip}, MAC={mac}", LogLevel.Debug);
 
@@ -692,8 +717,85 @@ namespace RDPLoginMonitor
             }
         }
 
+        // Перегрузка: ARP для конкретного интерфейса
+        private void ScanARPTable(IPAddress ifaceIp)
+        {
+            try
+            {
+                var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "arp",
+                        Arguments = ifaceIp != null ? $"-a -N {ifaceIp}" : "-a",
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.GetEncoding(866)
+                    }
+                };
+
+                process.Start();
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                WriteLog($"ARP таблица получена, размер: {output.Length} символов", LogLevel.Debug);
+
+                // Парсим
+                var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                int deviceCount = 0;
+                int skippedCount = 0;
+                foreach (var line in lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) { skippedCount++; continue; }
+                    var headerLower = line.Trim().ToLowerInvariant();
+                    if (headerLower.Contains("interface") || headerLower.Contains("internet address") || headerLower.Contains("интерфейс") || headerLower.Contains("адрес")) { skippedCount++; continue; }
+
+                    var trimmed = line.Trim();
+                    var pIpMacTypeDash = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+(\S+)";
+                    var pIpMacTypeColon = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\s+(\S+)";
+                    var pIpMacDash = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})";
+                    var pIpMacColon = @"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})";
+                    var pIpTypeRu = @"^(\d+\.\d+\.\d+\.\d+)\s+(динамический|статический)";
+
+                    string ip = null; string macRaw = null; string type = null;
+                    Match m;
+                    if ((m = Regex.Match(trimmed, pIpMacTypeDash)).Success || (m = Regex.Match(trimmed, pIpMacTypeColon)).Success) { ip = m.Groups[1].Value; macRaw = m.Groups[2].Value; type = m.Groups[3].Value; }
+                    else if ((m = Regex.Match(trimmed, pIpMacDash)).Success || (m = Regex.Match(trimmed, pIpMacColon)).Success) { ip = m.Groups[1].Value; macRaw = m.Groups[2].Value; }
+                    else if ((m = Regex.Match(trimmed, pIpTypeRu)).Success) { ip = m.Groups[1].Value; type = m.Groups[2].Value; }
+
+                    if (!string.IsNullOrEmpty(ip))
+                    {
+                        if (IsSpecialOrNonLocal(ip)) { skippedCount++; continue; }
+                        var mac = !string.IsNullOrEmpty(macRaw) ? NormalizeMacAddress(macRaw) : "Неизвестно";
+                        if (mac == "Неизвестно" && !IsMulticastOrBroadcast(ip)) { skippedCount++; continue; }
+                        deviceCount++;
+                        WriteLog($"ARP запись #{deviceCount}: IP={ip}, MAC={mac}", LogLevel.Debug);
+                        var device = new NetworkDevice { IPAddress = ip, MACAddress = mac, Hostname = GetHostname(ip), Status = "Активен", LastSeen = DateTime.Now };
+                        device.Vendor = GetVendorFromMAC(device.MACAddress);
+                        device.DeviceType = DetermineDeviceType(device);
+                        device.OperatingSystem = DetectOperatingSystem(device);
+                        device.OpenPorts = deviceCount <= 20 ? ScanCommonPorts(ip) : new List<int>();
+                        device.Description = GenerateDeviceDescription(device);
+                        ProcessDevice(device);
+                    }
+                    else { skippedCount++; }
+                }
+                WriteLog($"Обработано {deviceCount} записей из ARP таблицы, пропущено {skippedCount}", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                WriteLog($"Ошибка сканирования ARP: {ex.Message}", LogLevel.Error);
+            }
+        }
+
         private void ProcessDevice(NetworkDevice device)
         {
+            // Фильтруем строго: обрабатываем только локальную подсеть
+            if (device == null || IsSpecialOrNonLocal(device.IPAddress))
+            {
+                return;
+            }
             lock (_lockObject)
             {
                 var key = device.IPAddress;
@@ -716,7 +818,7 @@ namespace RDPLoginMonitor
                     }
 
                     // Обновляем hostname если он изменился
-                    if (device.Hostname != "Неизвестно" && existingDevice.Hostname != device.Hostname)
+                    if (!string.IsNullOrEmpty(device.Hostname) && device.Hostname != existingDevice.Hostname)
                     {
                         existingDevice.Hostname = device.Hostname;
                     }
@@ -747,8 +849,9 @@ namespace RDPLoginMonitor
 
             foreach (var device in devicesToCheck)
             {
-                Task.Run(() =>
+                Task.Run(async () =>
                 {
+                    await _statusSemaphore.WaitAsync().ConfigureAwait(false);
                     try
                     {
                         using (var ping = new Ping())
@@ -768,6 +871,10 @@ namespace RDPLoginMonitor
                     {
                         device.Status = "Ошибка";
                         OnDeviceStatusChanged?.Invoke(device);
+                    }
+                    finally
+                    {
+                        _statusSemaphore.Release();
                     }
                 });
             }
@@ -800,34 +907,47 @@ namespace RDPLoginMonitor
                     }
                 }
 
-                // Метод 2: Через DNS (fallback)
-                var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-                foreach (var ip in host.AddressList)
+                // Метод 2: Через DNS (fallback) — с защитой от исключений
+                try
                 {
-                    if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                    var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
+                    foreach (var ip in host.AddressList)
                     {
-                        var ipStr = ip.ToString();
-                        if (ipStr.StartsWith("192.168.") || ipStr.StartsWith("10.") ||
-                            (ipStr.StartsWith("172.") && IsInRange172(ipStr)))
+                        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
                         {
-                            WriteLog($"Найден локальный IP через DNS: {ipStr}", LogLevel.Debug);
-                            return ipStr;
+                            var ipStr = ip.ToString();
+                            if (ipStr.StartsWith("192.168.") || ipStr.StartsWith("10.") ||
+                                (ipStr.StartsWith("172.") && IsInRange172(ipStr)))
+                            {
+                                WriteLog($"Найден локальный IP через DNS: {ipStr}", LogLevel.Debug);
+                                return ipStr;
+                            }
                         }
                     }
                 }
+                catch (System.Net.Sockets.SocketException) { }
+                catch { }
 
-                // Метод 3: Подключение к внешнему адресу для определения локального IP
-                using (var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork,
-                                                                 System.Net.Sockets.SocketType.Dgram, 0))
+                // Метод 3: Подключение к внешнему адресу — оборачиваем в try/catch
+                try
                 {
-                    socket.Connect("8.8.8.8", 65530);
-                    var endPoint = socket.LocalEndPoint as System.Net.IPEndPoint;
-                    if (endPoint != null)
+                    using (var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetwork,
+                                                                         System.Net.Sockets.SocketType.Dgram, 0))
                     {
-                        WriteLog($"Найден локальный IP через socket: {endPoint.Address}", LogLevel.Debug);
-                        return endPoint.Address.ToString();
+                        // Без реального подключения (UDP), с коротким таймаутом
+                        socket.ReceiveTimeout = 500;
+                        socket.SendTimeout = 500;
+                        try { socket.Connect("8.8.8.8", 65530); } catch (System.Net.Sockets.SocketException) { }
+                        var endPoint = socket.LocalEndPoint as System.Net.IPEndPoint;
+                        if (endPoint != null)
+                        {
+                            WriteLog($"Найден локальный IP через socket: {endPoint.Address}", LogLevel.Debug);
+                            return endPoint.Address.ToString();
+                        }
                     }
                 }
+                catch (System.Net.Sockets.SocketException) { }
+                catch { }
             }
             catch (Exception ex)
             {
@@ -1161,11 +1281,8 @@ namespace RDPLoginMonitor
 
             try
             {
-                WriteLog($"=== ПОИСК ВЕНДОРА ДЛЯ MAC: {macAddress} ===", LogLevel.Debug);
-
                 // Очищаем MAC от всех разделителей
                 var cleanMac = macAddress.Replace(":", "").Replace("-", "").Replace(" ", "").ToUpper();
-                WriteLog($"Очищенный MAC: {cleanMac}", LogLevel.Debug);
 
                 // Проверяем длину
                 if (cleanMac.Length < 6)
@@ -1176,9 +1293,8 @@ namespace RDPLoginMonitor
 
                 // Берем первые 6 символов
                 var prefix = cleanMac.Substring(0, 6);
-                WriteLog($"Префикс для поиска: {prefix}", LogLevel.Debug);
 
-                // Специальные случаи для известных префиксов
+                // Специальные случаи для известных префиксов (без лишних логов)
                 if (prefix.StartsWith("01005E"))
                 {
                     return "Multicast адрес";
@@ -1191,6 +1307,11 @@ namespace RDPLoginMonitor
                 {
                     return "IPv6 Multicast";
                 }
+
+                // Подробные логи только для обычного поиска в базе
+                WriteLog($"=== ПОИСК ВЕНДОРА ДЛЯ MAC: {macAddress} ===", LogLevel.Debug);
+                WriteLog($"Очищенный MAC: {cleanMac}", LogLevel.Debug);
+                WriteLog($"Префикс для поиска: {prefix}", LogLevel.Debug);
 
                 lock (_lockObject)
                 {
@@ -1208,25 +1329,19 @@ namespace RDPLoginMonitor
                         WriteLog($"✓ НАЙДЕН ВЕНДОР: {vendor}", LogLevel.Success);
                         return vendor;
                     }
-                    else
+
+                    // Альтернативный поиск: иногда префикс может быть в другом формате
+                    var altPrefix = prefix.ToUpper();
+                    if (_vendorDatabase.ContainsKey(altPrefix))
                     {
-                        WriteLog($"✗ Вендор НЕ НАЙДЕН для префикса: {prefix}", LogLevel.Debug);
-
-                        // Пробуем альтернативные префиксы для некоторых производителей
-                        var alternativePrefixes = GetAlternativePrefixes(prefix);
-                        foreach (var altPrefix in alternativePrefixes)
-                        {
-                            if (_vendorDatabase.ContainsKey(altPrefix))
-                            {
-                                var vendor = _vendorDatabase[altPrefix];
-                                WriteLog($"✓ НАЙДЕН через альтернативный префикс {altPrefix}: {vendor}", LogLevel.Success);
-                                return vendor;
-                            }
-                        }
-
-                        return DetermineVendorByPattern(prefix);
+                        var vendor = _vendorDatabase[altPrefix];
+                        WriteLog($"✓ НАЙДЕН через альтернативный префикс {altPrefix}: {vendor}", LogLevel.Success);
+                        return vendor;
                     }
                 }
+
+                WriteLog($"✗ Вендор НЕ НАЙДЕН для префикса: {prefix}", LogLevel.Debug);
+                return "Неизвестно";
             }
             catch (Exception ex)
             {
@@ -1657,5 +1772,123 @@ namespace RDPLoginMonitor
         }
 
         public bool IsRunning => _isRunning;
+
+        private IPAddress GetSubnetMaskFor(IPAddress localIp)
+        {
+            try
+            {
+                if (localIp == null) return null;
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                        continue;
+                    var ipProps = ni.GetIPProperties();
+                    foreach (var ua in ipProps.UnicastAddresses)
+                    {
+                        if (ua.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && ua.Address.Equals(localIp))
+                        {
+                            return ua.IPv4Mask;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private void DiscoverLocalSubnets()
+        {
+            _localSubnets.Clear();
+            try
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                        continue;
+                    var ipProps = ni.GetIPProperties();
+                    foreach (var ua in ipProps.UnicastAddresses)
+                    {
+                        if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                        var ip = ua.Address;
+                        var mask = ua.IPv4Mask;
+                        var ipStr = ip.ToString();
+                        // Поддерживаем только частные диапазоны (10.*, 172.16-31.*, 192.168.*)
+                        if (!(ipStr.StartsWith("10.") || ipStr.StartsWith("192.168.") || (ipStr.StartsWith("172.") && IsInRange172(ipStr))))
+                            continue;
+                        var prefix = GetNetworkPrefix(ipStr);
+                        _localSubnets.Add((ip, mask, prefix));
+                        // Сохраняем первый как "основной"
+                        if (_localIPv4Address == null)
+                        {
+                            _localIPv4Address = ip;
+                            _localSubnetMask = mask;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private bool IsInLocalSubnet(string ipString)
+        {
+            try
+            {
+                if (IPAddress.TryParse(ipString, out var ip))
+                {
+                    var ipBytes = ip.GetAddressBytes();
+                    foreach (var (localIp, mask, prefix) in _localSubnets)
+                    {
+                        if (mask == null) continue;
+                        var maskBytes = mask.GetAddressBytes();
+                        var localBytes = localIp.GetAddressBytes();
+                        bool same = true;
+                        for (int i = 0; i < 4; i++)
+                        {
+                            if ((ipBytes[i] & maskBytes[i]) != (localBytes[i] & maskBytes[i])) { same = false; break; }
+                        }
+                        if (same) return true;
+                    }
+                }
+            }
+            catch { }
+            // Fallback: сравниваем по любому /24 префиксу локальных IP
+            foreach (var (_, _, prefix) in _localSubnets)
+            {
+                if (!string.IsNullOrEmpty(prefix) && ipString.StartsWith(prefix + ".")) return true;
+            }
+            return false;
+        }
+
+        private bool IsMulticastOrBroadcast(string ipString)
+        {
+            try
+            {
+                if (ipString == "255.255.255.255") return true;
+                var dot = ipString.IndexOf('.');
+                if (dot > 0)
+                {
+                    var firstOctetStr = ipString.Substring(0, dot);
+                    if (int.TryParse(firstOctetStr, out var firstOctet))
+                    {
+                        if (firstOctet >= 224 && firstOctet <= 239) return true; // Multicast 224.0.0.0/4
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private bool IsSpecialOrNonLocal(string ipString)
+        {
+            // Фильтруем 0.0.0.0, 169.254.0.0/16 и явно внешние не из нашей подсети
+            if (string.IsNullOrEmpty(ipString)) return true;
+            if (ipString == "0.0.0.0") return true;
+            if (ipString.StartsWith("169.254.")) return true;
+            // Мультикаст/бродкаст оставляем (включаем в локальные)
+            if (IsMulticastOrBroadcast(ipString)) return false;
+            // Если не в одной из наших подсетей — считаем не локальным
+            if (!IsInLocalSubnet(ipString)) return true;
+            return false;
+        }
     }
 }
