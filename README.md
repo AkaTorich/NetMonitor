@@ -1,4 +1,4 @@
-# RDP & Network Security Monitor v2.1
+# RDP & Network Security Monitor v2.3
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.3-blue.svg" alt="Version">
