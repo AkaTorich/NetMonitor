@@ -80,7 +80,7 @@ namespace RDPLoginMonitor
 				if (IsDisposed || !IsHandleCreated) return;
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => AddLoginAttempt(login)));
+					BeginInvoke(new Action(() => AddLoginAttempt(login)));
 				}
 				else
 				{
@@ -93,7 +93,7 @@ namespace RDPLoginMonitor
 				if (IsDisposed || !IsHandleCreated) return;
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => ShowSuspiciousActivity(key, attempts)));
+					BeginInvoke(new Action(() => ShowSuspiciousActivity(key, attempts)));
 				}
 				else
 				{
@@ -106,7 +106,7 @@ namespace RDPLoginMonitor
 				if (IsDisposed || !IsHandleCreated) return;
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => AddLogMessage(message, level)));
+					BeginInvoke(new Action(() => AddLogMessage(message, level)));
 				}
 				else
 				{
@@ -123,7 +123,7 @@ namespace RDPLoginMonitor
 				if (IsDisposed || !IsHandleCreated) return;
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => AddLogMessage(message, level)));
+					BeginInvoke(new Action(() => AddLogMessage(message, level)));
 				}
 				else
 				{
@@ -143,7 +143,7 @@ namespace RDPLoginMonitor
 				}
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => { /* пусто, только чтобы дернуть очередь таймером */ }));
+					BeginInvoke(new Action(() => { /* пусто, только чтобы дернуть очередь таймером */ }));
 				}
 			};
 
@@ -157,7 +157,7 @@ namespace RDPLoginMonitor
 				}
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => { /* пусто, только чтобы дернуть очередь таймером */ }));
+					BeginInvoke(new Action(() => { /* пусто, только чтобы дернуть очередь таймером */ }));
 				}
 			};
 
@@ -843,28 +843,28 @@ namespace RDPLoginMonitor
 					// Диагностика, требующая прав админа
 					if (_monitor.IsRunningAsAdministrator())
 					{
-						Invoke(new Action(() => AddLogMessage("🔐 Запуск расширенной диагностики (с правами админа)...", LogLevel.Info)));
+						BeginInvoke(new Action(() => AddLogMessage("🔐 Запуск расширенной диагностики (с правами админа)...", LogLevel.Info)));
 
 						// Вызываем диагностику RDP из главного потока
-						Invoke(new Action(() =>
+											BeginInvoke(new Action(() =>
+					{
+						try
 						{
-							try
-							{
-								_monitor.TestEventLogAccess();
-							}
-							catch (Exception ex)
-							{
-								AddLogMessage($"❌ Ошибка RDP диагностики: {ex.Message}", LogLevel.Error);
-							}
-						}));
+							_monitor.TestEventLogAccess();
+						}
+						catch (Exception ex)
+						{
+							AddLogMessage($"❌ Ошибка RDP диагностики: {ex.Message}", LogLevel.Error);
+						}
+					}));
 					}
 					else
 					{
-						Invoke(new Action(() => AddLogMessage("⚠️ Расширенная диагностика пропущена (нет прав админа)", LogLevel.Warning)));
-						Invoke(new Action(() => AddLogMessage("💡 Для проверки RDP событий запусти программу от имени администратора", LogLevel.Info)));
+						BeginInvoke(new Action(() => AddLogMessage("⚠️ Расширенная диагностика пропущена (нет прав админа)", LogLevel.Warning)));
+						BeginInvoke(new Action(() => AddLogMessage("💡 Для проверки RDP событий запусти программу от имени администратора", LogLevel.Info)));
 					}
 
-					Invoke(new Action(() =>
+					BeginInvoke(new Action(() =>
 					{
 						AddLogMessage("✅ Диагностика завершена. Проверь результаты выше.", LogLevel.Success);
 						ShowDiagnosticSummary();
@@ -872,7 +872,7 @@ namespace RDPLoginMonitor
 				}
 				catch (Exception ex)
 				{
-					Invoke(new Action(() =>
+					BeginInvoke(new Action(() =>
 					{
 						AddLogMessage($"❌ Ошибка диагностики: {ex.Message}", LogLevel.Error);
 					}));
@@ -885,54 +885,54 @@ namespace RDPLoginMonitor
 		/// </summary>
 		private void PerformBasicDiagnosticSafe()
 		{
-			Invoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА СИСТЕМЫ ===", LogLevel.Info)));
+			BeginInvoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА СИСТЕМЫ ===", LogLevel.Info)));
 
 			// 1. Проверка прав
 			var hasAdmin = _monitor.IsRunningAsAdministrator();
-			Invoke(new Action(() => AddLogMessage($"🔐 Права администратора: {(hasAdmin ? "ДА" : "НЕТ")}",
-						  hasAdmin ? LogLevel.Success : LogLevel.Warning)));
+						BeginInvoke(new Action(() => AddLogMessage($"🔐 Права администратора: {(hasAdmin ? "ДА" : "НЕТ")}",
+					  hasAdmin ? LogLevel.Success : LogLevel.Warning)));
 
 			// 2. Проверка сетевого подключения
-			Invoke(new Action(() => AddLogMessage("🌐 Проверка сетевого подключения...", LogLevel.Info)));
+			BeginInvoke(new Action(() => AddLogMessage("🌐 Проверка сетевого подключения...", LogLevel.Info)));
 			try
 			{
 				var localIP = GetLocalIPForDiagnostic();
 				if (!string.IsNullOrEmpty(localIP))
 				{
-					Invoke(new Action(() => AddLogMessage($"✅ Локальный IP найден: {localIP}", LogLevel.Success)));
+					BeginInvoke(new Action(() => AddLogMessage($"✅ Локальный IP найден: {localIP}", LogLevel.Success)));
 
 					var networkPrefix = GetNetworkPrefix(localIP);
-					Invoke(new Action(() => AddLogMessage($"📡 Сетевая подсеть: {networkPrefix}.0/24", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage($"📡 Сетевая подсеть: {networkPrefix}.0/24", LogLevel.Info)));
 				}
 				else
 				{
-					Invoke(new Action(() => AddLogMessage("❌ Не удалось определить локальный IP", LogLevel.Error)));
+					BeginInvoke(new Action(() => AddLogMessage("❌ Не удалось определить локальный IP", LogLevel.Error)));
 				}
 			}
 			catch (Exception ex)
 			{
-				Invoke(new Action(() => AddLogMessage($"❌ Ошибка проверки сети: {ex.Message}", LogLevel.Error)));
+				BeginInvoke(new Action(() => AddLogMessage($"❌ Ошибка проверки сети: {ex.Message}", LogLevel.Error)));
 			}
 
 			// 3. Проверка ARP таблицы (доступна без админа)
-			Invoke(new Action(() => AddLogMessage("🔍 Проверка ARP таблицы...", LogLevel.Info)));
+			BeginInvoke(new Action(() => AddLogMessage("🔍 Проверка ARP таблицы...", LogLevel.Info)));
 			try
 			{
 				var arpDevices = GetARPDevicesCount();
-				Invoke(new Action(() => AddLogMessage($"📋 Устройств в ARP таблице: {arpDevices}", LogLevel.Success)));
+				BeginInvoke(new Action(() => AddLogMessage($"📋 Устройств в ARP таблице: {arpDevices}", LogLevel.Success)));
 			}
 			catch (Exception ex)
 			{
-				Invoke(new Action(() => AddLogMessage($"⚠️ Ошибка чтения ARP: {ex.Message}", LogLevel.Warning)));
+				BeginInvoke(new Action(() => AddLogMessage($"⚠️ Ошибка чтения ARP: {ex.Message}", LogLevel.Warning)));
 			}
 
 			// 4. Проверка MAC базы данных (не требует админа) - НЕ через Invoke!
-			Invoke(new Action(() => AddLogMessage("📚 Проверка базы данных MAC адресов...", LogLevel.Info)));
+			BeginInvoke(new Action(() => AddLogMessage("📚 Проверка базы данных MAC адресов...", LogLevel.Info)));
 
 			// Диагностика MAC базы вызывается напрямую, так как у неё свой Debug вывод
 			_networkMonitor.DiagnoseMacDatabase();
 
-			Invoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА ЗАВЕРШЕНА ===", LogLevel.Info)));
+			BeginInvoke(new Action(() => AddLogMessage("=== БАЗОВАЯ ДИАГНОСТИКА ЗАВЕРШЕНА ===", LogLevel.Info)));
 		}
 
 		/// <summary>
@@ -992,32 +992,32 @@ namespace RDPLoginMonitor
 				try
 				{
 					// Диагностика MAC базы данных
-					Invoke(new Action(() => AddLogMessage("📚 Диагностика базы данных MAC адресов...", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage("📚 Диагностика базы данных MAC адресов...", LogLevel.Info)));
 					_networkMonitor.DiagnoseMacDatabase();
 
 					// Проверка сетевых возможностей
-					Invoke(new Action(() => AddLogMessage("🔍 Проверка сетевых функций...", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage("🔍 Проверка сетевых функций...", LogLevel.Info)));
 
 					// Тест ARP
 					var arpCount = GetARPDevicesCount();
-					Invoke(new Action(() => AddLogMessage($"📋 ARP таблица: найдено {arpCount} устройств", LogLevel.Success)));
+					BeginInvoke(new Action(() => AddLogMessage($"📋 ARP таблица: найдено {arpCount} устройств", LogLevel.Success)));
 
 					// Тест пинга
-					Invoke(new Action(() => AddLogMessage("🏓 Тест сетевого доступа...", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage("🏓 Тест сетевого доступа...", LogLevel.Info)));
 					TestNetworkConnectivitySafe();
 
 					// Проверка возможности сканирования
-					Invoke(new Action(() => AddLogMessage("🔍 Тест сканирования сети...", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage("🔍 Тест сканирования сети...", LogLevel.Info)));
 					TestNetworkScanningSafe();
 
-					Invoke(new Action(() =>
-					{
-						AddLogMessage("✅ Диагностика сети завершена", LogLevel.Success);
-
-						var message = "🌐 ДИАГНОСТИКА СЕТИ ЗАВЕРШЕНА\n\n" +
-									 "✅ ДОСТУПНЫЕ ФУНКЦИИ (БЕЗ АДМИНА):\n" +
-									 "• Сканирование локальной сети\n" +
-									 "• Определение устройств по MAC\n" +
+									BeginInvoke(new Action(() =>
+				{
+					AddLogMessage("✅ Диагностика сети завершена", LogLevel.Success);
+					
+					var message = "🌐 ДИАГНОСТИКА СЕТИ ЗАВЕРШЕНА\n\n" +
+								 "✅ ДОСТУПНЫЕ ФУНКЦИИ (БЕЗ АДМИНА):\n" +
+								 "• Сканирование локальной сети\n" +
+								 "• Определение устройств по MAC\n" +
 									 "• Анализ ARP таблицы\n" +
 									 "• Ping тестирование\n" +
 									 "• Определение производителей устройств\n\n" +
@@ -1039,7 +1039,7 @@ namespace RDPLoginMonitor
 				}
 				catch (Exception ex)
 				{
-					Invoke(new Action(() =>
+					BeginInvoke(new Action(() =>
 					{
 						AddLogMessage($"❌ Ошибка диагностики сети: {ex.Message}", LogLevel.Error);
 					}));
@@ -1083,13 +1083,13 @@ namespace RDPLoginMonitor
 				try
 				{
 					// Показываем инструкции
-					Invoke(new Action(() =>
+										BeginInvoke(new Action(() =>
 					{
 						var instructions = "ТЕСТИРОВАНИЕ RDP - ИНСТРУКЦИИ:\n\n" +
-										 "1. Убедись что RDP включен на этом компьютере\n" +
-										 "2. Открой 'Подключение к удаленному рабочему столу' (mstsc)\n" +
-										 "3. Подключись к: 127.0.0.1 или localhost\n" +
-										 "4. Попробуй:\n" +
+								 "1. Убедись что RDP включен на этом компьютере\n" +
+								 "2. Открой 'Подключение к удаленному рабочему столу' (mstsc)\n" +
+								 "3. Подключись к: 127.0.0.1 или localhost\n" +
+								 "4. Попробуй:\n" +
 										 "   - Правильный пароль (должно создать LogonType 10)\n" +
 										 "   - Неправильный пароль (должно создать событие 4625)\n" +
 										 "5. Смотри результаты в текстовом логе\n\n" +
@@ -1111,7 +1111,7 @@ namespace RDPLoginMonitor
 				}
 				catch (Exception ex)
 				{
-					Invoke(new Action(() =>
+					BeginInvoke(new Action(() =>
 					{
 						AddLogMessage($"❌ Ошибка RDP теста: {ex.Message}", LogLevel.Error);
 					}));
@@ -1126,7 +1126,7 @@ namespace RDPLoginMonitor
 			_testMessageCount = 0;
 
 			// Обновляем UI кнопки
-			Invoke(new Action(() =>
+			BeginInvoke(new Action(() =>
 			{
 				testRDPButton.Text = "⏹️ Остановить";
 				testRDPButton.BackColor = Color.LightCoral;
@@ -1233,7 +1233,7 @@ namespace RDPLoginMonitor
 				}
 
 				// Завершение теста
-				Invoke(new Action(() =>
+				BeginInvoke(new Action(() =>
 				{
 					_isRDPTestRunning = false;
 					testRDPButton.Text = "🎯 RDP Тест";
@@ -1329,7 +1329,7 @@ namespace RDPLoginMonitor
 				_testMessageCount++;
 				if (InvokeRequired)
 				{
-					Invoke(new Action(() => AddLogMessage(message, level)));
+					BeginInvoke(new Action(() => AddLogMessage(message, level)));
 				}
 				else
 				{
@@ -1403,11 +1403,11 @@ namespace RDPLoginMonitor
 
 						if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
 						{
-							Invoke(new Action(() => AddLogMessage($"✅ Ping шлюза {gateway}: успешно ({reply.RoundtripTime}ms)", LogLevel.Success)));
+							BeginInvoke(new Action(() => AddLogMessage($"✅ Ping шлюза {gateway}: успешно ({reply.RoundtripTime}ms)", LogLevel.Success)));
 						}
 						else
 						{
-							Invoke(new Action(() => AddLogMessage($"⚠️ Ping шлюза {gateway}: {reply.Status}", LogLevel.Warning)));
+							BeginInvoke(new Action(() => AddLogMessage($"⚠️ Ping шлюза {gateway}: {reply.Status}", LogLevel.Warning)));
 						}
 					}
 				}
@@ -1416,16 +1416,16 @@ namespace RDPLoginMonitor
 				try
 				{
 					var hostEntry = System.Net.Dns.GetHostEntry("google.com");
-					Invoke(new Action(() => AddLogMessage("✅ DNS резолюция: работает", LogLevel.Success)));
+					BeginInvoke(new Action(() => AddLogMessage("✅ DNS резолюция: работает", LogLevel.Success)));
 				}
 				catch
 				{
-					Invoke(new Action(() => AddLogMessage("⚠️ DNS резолюция: проблемы", LogLevel.Warning)));
+					BeginInvoke(new Action(() => AddLogMessage("⚠️ DNS резолюция: проблемы", LogLevel.Warning)));
 				}
 			}
 			catch (Exception ex)
 			{
-				Invoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сети: {ex.Message}", LogLevel.Error)));
+				BeginInvoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сети: {ex.Message}", LogLevel.Error)));
 			}
 		}
 
@@ -1439,7 +1439,7 @@ namespace RDPLoginMonitor
 				var localIP = GetLocalIPForDiagnostic();
 				if (!string.IsNullOrEmpty(localIP))
 				{
-					Invoke(new Action(() => AddLogMessage($"🔍 Тестовое сканирование с IP: {localIP}", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage($"🔍 Тестовое сканирование с IP: {localIP}", LogLevel.Info)));
 
 					// Быстрый тест сканирования 3 адресов
 					var networkPrefix = GetNetworkPrefix(localIP);
@@ -1456,28 +1456,28 @@ namespace RDPLoginMonitor
 								if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
 								{
 									foundDevices++;
-									Invoke(new Action(() => AddLogMessage($"📱 Найдено устройство: {testIP} ({reply.RoundtripTime}ms)", LogLevel.Success)));
+									BeginInvoke(new Action(() => AddLogMessage($"📱 Найдено устройство: {testIP} ({reply.RoundtripTime}ms)", LogLevel.Success)));
 								}
 							}
 						}
 						catch { }
 					}
 
-					Invoke(new Action(() => AddLogMessage($"📊 Результат теста: найдено {foundDevices} из {testIPs.Length} тестовых адресов", LogLevel.Info)));
+					BeginInvoke(new Action(() => AddLogMessage($"📊 Результат теста: найдено {foundDevices} из {testIPs.Length} тестовых адресов", LogLevel.Info)));
 
 					if (foundDevices > 0)
 					{
-						Invoke(new Action(() => AddLogMessage("✅ Сканирование сети: работает корректно", LogLevel.Success)));
+						BeginInvoke(new Action(() => AddLogMessage("✅ Сканирование сети: работает корректно", LogLevel.Success)));
 					}
 					else
 					{
-						Invoke(new Action(() => AddLogMessage("⚠️ Сканирование сети: возможны проблемы с файрволом", LogLevel.Warning)));
+						BeginInvoke(new Action(() => AddLogMessage("⚠️ Сканирование сети: возможны проблемы с файрволом", LogLevel.Warning)));
 					}
 				}
 			}
 			catch (Exception ex)
 			{
-				Invoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сканирования: {ex.Message}", LogLevel.Error)));
+				BeginInvoke(new Action(() => AddLogMessage($"❌ Ошибка тестирования сканирования: {ex.Message}", LogLevel.Error)));
 			}
 		}
 
@@ -1861,7 +1861,7 @@ namespace RDPLoginMonitor
 			{
 				_networkMonitor.PerformNetworkScan();
 
-				Invoke(new Action(() =>
+				BeginInvoke(new Action(() =>
 				{
 					scanNetworkButton.Enabled = true;
 					scanNetworkButton.Text = "🔍 Сканировать сеть";

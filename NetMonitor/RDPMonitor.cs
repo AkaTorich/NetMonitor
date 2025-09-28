@@ -121,18 +121,8 @@ namespace RDPLoginMonitor
                 _cancellationTokenSource.Cancel();
             }
 
-            // Ждем завершения задачи мониторинга
-            if (_monitoringTask != null)
-            {
-                try
-                {
-                    _monitoringTask.Wait(TimeSpan.FromSeconds(5)); // Ждем максимум 5 секунд
-                }
-                catch (Exception ex)
-                {
-                    WriteLog($"Ошибка при остановке задачи мониторинга: {ex.Message}", LogLevel.Warning);
-                }
-            }
+            // Не блокируем UI-поток: отправляем отмену и продолжаем, задача завершится в фоне
+            // Если нужно дождаться, делайте это асинхронно вне UI.
 
             // Безопасное закрытие EventLogWatcher
             if (_watcher != null)

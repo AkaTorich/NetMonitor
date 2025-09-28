@@ -1254,14 +1254,14 @@ namespace RDPLoginMonitor
         {
             try
             {
-                // Используем таймаут для DNS запроса
-                var task = Task.Run(() => Dns.GetHostEntry(ipAddress));
-
-                if (task.Wait(TimeSpan.FromSeconds(3)))
+                // Асинхронный DNS с таймаутом без блокировок .Result/.Wait на UI
+                var dnsTask = Dns.GetHostEntryAsync(ipAddress);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(3));
+                var completed = Task.WhenAny(dnsTask, timeoutTask).GetAwaiter().GetResult();
+                if (completed == dnsTask && dnsTask.Status == TaskStatus.RanToCompletion && dnsTask.Result != null)
                 {
-                    return task.Result.HostName;
+                    return dnsTask.Result.HostName;
                 }
-
                 return "Неизвестно";
             }
             catch (Exception)
