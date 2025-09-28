@@ -1,7 +1,7 @@
 # RDP & Network Security Monitor v2.1
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.3-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/.NET-4.7.2+-purple.svg" alt=".NET">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
